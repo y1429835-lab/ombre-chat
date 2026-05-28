@@ -33,8 +33,15 @@ export async function POST(req) {
           params: { name: "breath", arguments: { query: messages.at(-1).content } }
         })
       });
-      const data = await breathRes.json();
-      memoryContext = data?.result?.content?.[0]?.text || "";
+      const text = await breathRes.text();
+      const lines = text.split("\n").filter(l => l.startsWith("data:"));
+      for (const line of lines) {
+        try {
+          const json = JSON.parse(line.slice(5).trim());
+          memoryContext = json?.result?.content?.[0]?.text || "";
+          if (memoryContext) break;
+        } catch {}
+      }
     } catch {}
   }
 
