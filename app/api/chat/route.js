@@ -6,41 +6,11 @@ export async function POST(req) {
   let memoryContext = "";
   if (ombreUrl) {
     try {
-      const initRes = await fetch(`${ombreUrl}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json, text/event-stream"
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "initialize",
-          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ombre-chat", version: "1.0" } }
-        })
-      });
-      const sessionId = initRes.headers.get("mcp-session-id");
-
-      const breathRes = await fetch(`${ombreUrl}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json, text/event-stream",
-          ...(sessionId ? { "mcp-session-id": sessionId } : {})
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 2,
-          method: "tools/call",
-          params: { name: "breath", arguments: { query: messages.at(-1).content } }
-        })
-      });
-      const text = await breathRes.text();
-      const lines = text.split("\n").filter(l => l.startsWith("data:"));
-      for (const line of lines) {
-        try {
-          const json = JSON.parse(line.slice(5).trim());
-          memoryContext = json?.result?.content?.[0]?.text || "";
-          if (memoryContext) break;
-        } catch {}
+      const q = encodeURIComponent(messages.at(-1).content.slice(0, 50));
+      const res = await fetch(`${ombreUrl}/search?q=${q}`);
+      const data = await res.json();
+      if (data.results && data.results.length > 0) {
+        memoryContext = data.results.slice(0, 3).join("\n---\n");
       }
     } catch {}
   }
