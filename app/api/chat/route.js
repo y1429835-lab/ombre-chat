@@ -1,7 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
 export async function POST(req) {
   const { messages, ombreUrl } = await req.json();
 
@@ -25,12 +21,19 @@ export async function POST(req) {
     ? `你有以下相关记忆：\n${memoryContext}\n\n请结合记忆回答。`
     : "你是一个有帮助的助手。";
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 1024,
-    system,
-    messages,
+  const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [{ role: "system", content: system }, ...messages],
+      max_tokens: 1024
+    })
   });
 
-  return Response.json({ content: response.content[0].text });
+  const data = await response.json();
+  return Response.json({ content: data.choices[0].message.content });
 }
