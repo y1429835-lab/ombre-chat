@@ -15,6 +15,7 @@ export async function POST(req) {
     } catch {}
   }
 
+  console.log("memoryContext length:", memoryContext.length);
   const system = memoryContext
     ? `你有以下相关记忆：\n${memoryContext}\n\n请结合记忆回答。`
     : "你是一个有帮助的助手。";
