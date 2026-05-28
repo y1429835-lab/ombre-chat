@@ -1,3 +1,4 @@
+export const runtime = 'edge';
 let memoryContext = "";
 if (ombreUrl) {
   try {
