@@ -141,6 +141,3 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
 
   return Response.json({ content: data.content[0].text, sources });
 }
-
-  return Response.json({ content: data.content[0].text, sources });
-}
