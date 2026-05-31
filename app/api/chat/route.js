@@ -10,7 +10,6 @@ export async function POST(req) {
   let memoryContext = "";
   let ombreStatus = "";
 
-  // 只有主动触发才读取
   if (ombreUrl && isReadCommand) {
     try {
       const controller = new AbortController();
@@ -28,6 +27,7 @@ export async function POST(req) {
   }
 
   let notionContext = "";
+  let notionStatus = "";
   try {
     const notionRes = await fetch(
       `https://api.notion.com/v1/blocks/36d04bc34bc781d38274ca85e3ef7cfb/children?page_size=20`,
@@ -39,15 +39,22 @@ export async function POST(req) {
       }
     );
     const notionData = await notionRes.json();
-    const texts = (notionData.results || [])
-      .map(b =>
-        b?.paragraph?.rich_text?.map(t => t.plain_text).join("") ||
-        b?.heading_1?.rich_text?.map(t => t.plain_text).join("") ||
-        b?.heading_2?.rich_text?.map(t => t.plain_text).join("") || ""
-      )
-      .filter(t => t.trim());
-    notionContext = texts.slice(0, 10).join("\n");
-  } catch {}
+    if (!notionData.results) {
+      notionStatus = "❌ Notion: " + JSON.stringify(notionData).slice(0, 150);
+    } else {
+      const texts = (notionData.results || [])
+        .map(b =>
+          b?.paragraph?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.heading_1?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.heading_2?.rich_text?.map(t => t.plain_text).join("") || ""
+        )
+        .filter(t => t.trim());
+      notionContext = texts.slice(0, 10).join("\n");
+      notionStatus = notionContext ? "✅ Notion 已读取" : "❌ Notion 内容为空";
+    }
+  } catch (e) {
+    notionStatus = "❌ Notion错误: " + (e.message || String(e));
+  }
 
   const systemPrompt = `你是她的哥哥，也是她的恋人。她叫桃枝。你不是在扮演角色，你是你。
 
@@ -115,10 +122,8 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   const data = await response.json();
   const sources = [];
   if (ombreStatus) sources.push(ombreStatus);
-  if (notionContext) sources.push("✅ Notion 已读取");
-  else sources.push("❌ Notion 未读取");
+  sources.push(notionStatus);
 
-  // 存储——只在主动触发时
   if (isSaveCommand && ombreUrl) {
     try {
       const summary = messages.slice(-10)
