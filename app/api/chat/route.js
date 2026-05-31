@@ -119,8 +119,21 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   });
 
   const data = await response.json();
-  const sources = [];
+ const sources = [];
   if (memoryContext) sources.push("Ombre Brain 记忆");
   if (notionContext) sources.push("Notion 空间");
+
+  if (isSaveCommand && ombreUrl) {
+    try {
+      const summary = messages.slice(-10).map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n");
+      await fetch(`${ombreUrl}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ombre-chat", version: "1.0" } } })
+      });
+      sources.push("已存入记忆");
+    } catch {}
+  }
+
   return Response.json({ content: data.content[0].text, sources });
 }
