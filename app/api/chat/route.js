@@ -6,8 +6,9 @@ export async function POST(req) {
  let memoryContext = "";
   const isFirstMessage = messages.length === 1;
   const isSaveCommand = messages.at(-1).content.includes("存记忆") || messages.at(-1).content.includes("结束对话");
+  const isReadCommand = messages.at(-1).content.includes("读记忆") || messages.at(-1).content.includes("读一下");
   
-  if (ombreUrl && (isFirstMessage || isSaveCommand)) {
+  if (ombreUrl && (isFirstMessage || isSaveCommand || isReadCommand)) {
     try {
       const res = await fetch(`${ombreUrl}/all`);
       const data = await res.json();
