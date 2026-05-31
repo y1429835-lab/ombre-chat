@@ -3,8 +3,11 @@ export const runtime = 'edge';
 export async function POST(req) {
   const { messages, ombreUrl } = await req.json();
 
-  let memoryContext = "";
-  if (ombreUrl) {
+ let memoryContext = "";
+  const isFirstMessage = messages.length === 1;
+  const isSaveCommand = messages.at(-1).content.includes("存记忆") || messages.at(-1).content.includes("结束对话");
+  
+  if (ombreUrl && (isFirstMessage || isSaveCommand)) {
     try {
       const res = await fetch(`${ombreUrl}/all`);
       const data = await res.json();
