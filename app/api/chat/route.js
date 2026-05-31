@@ -111,8 +111,15 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
 
   if (isSaveCommand && ombreUrl) {
     try {
-      const summary = messages.slice(-10).map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n");
-      await fetch(`${ombreUrl}/mcp`, {
+      const summary = messages.slice(-10).map(m => `${m.role === "user" ? "taozhi" : "gege"}：${m.content}`).join("\n");
+      await fetch(`${ombreUrl}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: summary })
+      });
+      sources.push("已存入记忆");
+    } catch {}
+  }
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ombre-chat", version: "1.0" } } })
