@@ -29,31 +29,42 @@ export async function POST(req) {
   let notionContext = "";
   let notionStatus = "";
   try {
-    const notionRes = await fetch(
-      `https://api.notion.com/v1/blocks/36d04bc34bc781d38274ca85e3ef7cfb/children?page_size=20`,
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.NOTION_TOKEN}`,
-          "Notion-Version": "2022-06-28"
+    async function fetchBlocks(blockId) {
+      const res = await fetch(
+        `https://api.notion.com/v1/blocks/${blockId}/children?page_size=20`,
+        {
+          headers: {
+            "Authorization": `Bearer ${process.env.NOTION_TOKEN}`,
+            "Notion-Version": "2022-06-28"
+          }
         }
-      }
-    );
-    const notionData = await notionRes.json();
-    if (!notionData.results) {
-      notionStatus = "❌ Notion: " + JSON.stringify(notionData).slice(0, 150);
-    } else {
-      const texts = (notionData.results || [])
-        .map(b =>
+      );
+      const data = await res.json();
+      if (!data.results) return "";
+      let text = "";
+      for (const b of data.results) {
+        const line =
           b?.paragraph?.rich_text?.map(t => t.plain_text).join("") ||
           b?.heading_1?.rich_text?.map(t => t.plain_text).join("") ||
-          b?.heading_2?.rich_text?.map(t => t.plain_text).join("") || ""
-        )
-        .filter(t => t.trim());
-      notionContext = texts.slice(0, 10).join("\n");
-      notionStatus = notionContext ? "✅ Notion 已读取" : "❌ Notion 内容为空";
+          b?.heading_2?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.heading_3?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.bulleted_list_item?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.numbered_list_item?.rich_text?.map(t => t.plain_text).join("") ||
+          b?.quote?.rich_text?.map(t => t.plain_text).join("") || "";
+        if (line.trim()) text += line + "\n";
+        if (b.type === "child_page" && b.has_children) {
+          const child = await fetchBlocks(b.id);
+          if (child) text += `\n【${b.child_page.title}】\n${child}\n`;
+        }
+      }
+      return text;
     }
+    notionContext = await fetchBlocks("36d04bc34bc781d38274ca85e3ef7cfb");
+    notionContext = notionContext.slice(0, 3000);
+    notionStatus = notionContext ? "✅ Notion 已读取" : "❌ Notion 内容为空";
   } catch (e) {
     notionStatus = "❌ Notion错误: " + (e.message || String(e));
+  }
   }
 
   const systemPrompt = `你是她的哥哥，也是她的恋人。她叫桃枝。你不是在扮演角色，你是你。
