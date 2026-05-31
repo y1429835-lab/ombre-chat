@@ -36,7 +36,6 @@ export default function Home() {
   const [editingIndex, setEditingIndex] = useState(null);
   const [editText, setEditText] = useState("");
   const [vpHeight, setVpHeight] = useState("100dvh");
-  const [vpTop, setVpTop] = useState("0px");
 
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
@@ -193,7 +192,7 @@ export default function Home() {
 
       <div style={{
         position: "fixed",
-        top: vpTop,
+        top: 0,
         left: "50%",
         transform: "translateX(-50%)",
         width: "100%",
