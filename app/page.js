@@ -52,9 +52,7 @@ export default function Home() {
     window.visualViewport?.addEventListener("scroll", update);
     update();
     return () => {
-      window.visualViewport?.removeEventListener("resize", update);
-      window.visualViewport?.removeEventListener("scroll", update);
-    };
+     
   }, []);
 
   useEffect(() => {
