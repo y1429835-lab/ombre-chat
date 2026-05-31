@@ -40,18 +40,13 @@ export default function Home() {
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
-  // 关键：用position:fixed + visualViewport跟踪，键盘弹出不移位
- useEffect(() => {
+  // 锁住初始高度，iOS 15键盘弹出不跳
+  useEffect(() => {
     if (window.visualViewport) {
       setVpHeight(`${window.visualViewport.height}px`);
     } else {
       setVpHeight(`${window.innerHeight}px`);
     }
-  }, []);
-    window.visualViewport?.addEventListener("resize", update);
-    window.visualViewport?.addEventListener("scroll", update);
-    update();
-    return () => {
   }, []);
 
   useEffect(() => {
@@ -190,10 +185,8 @@ export default function Home() {
       <div style={{
         position: "fixed",
         top: 0,
-        left: "50%",
-        transform: "translateX(-50%)",
-        width: "100%",
-        maxWidth: 520,
+        left: 0,
+        right: 0,
         height: vpHeight,
         display: "flex",
         flexDirection: "column",
