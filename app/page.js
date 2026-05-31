@@ -7,9 +7,7 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ombreUrl, setOmbreUrl] = useState(() => {
-    try { return localStorage.getItem("ombre_url") || ""; } catch { return ""; }
-  });
+  const [ombreUrl, setOmbreUrl] = useState("");
   const [showSetting, setShowSetting] = useState(false);
   const [editingIndex, setEditingIndex] = useState(null);
   const [editText, setEditText] = useState("");
