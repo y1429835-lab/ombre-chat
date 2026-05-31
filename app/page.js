@@ -68,6 +68,7 @@ export default function Home() {
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true);
+    console.log("ombreUrl at send:", ombreUrl);
     try {
       const data = await callApi(newMessages);
       setMessages(prev => [...prev, {
@@ -78,7 +79,6 @@ export default function Home() {
       setMessages(prev => [...prev, { role: "assistant", content: "出错了，稍后再试。", time: getTime(), sources: [] }]);
     }
     setLoading(false);
-    console.log("ombreUrl at send:", ombreUrl);
   }
 
   async function regenerate(index) {
