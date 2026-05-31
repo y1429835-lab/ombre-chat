@@ -78,6 +78,7 @@ export default function Home() {
       setMessages(prev => [...prev, { role: "assistant", content: "出错了，稍后再试。", time: getTime(), sources: [] }]);
     }
     setLoading(false);
+    console.log("ombreUrl at send:", ombreUrl);
   }
 
   async function regenerate(index) {
