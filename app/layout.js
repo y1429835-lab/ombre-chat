@@ -1,7 +1,13 @@
-export const metadata = {
-  title: "Ombre Chat",
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+import { Viewport } from 'next';
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
+
+export const metadata = { title: "Ombre Chat" };
 
 export default function RootLayout({ children }) {
   return (
