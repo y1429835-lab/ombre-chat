@@ -10,8 +10,7 @@ export async function POST(req) {
   let memoryContext = "";
   let ombreStatus = "";
 
-  // 只有主动触发才
-  读取
+  // 只有主动触发才读取
   if (ombreUrl && isReadCommand) {
     try {
       const controller = new AbortController();
