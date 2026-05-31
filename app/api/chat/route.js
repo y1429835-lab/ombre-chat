@@ -13,30 +13,38 @@ export async function POST(req) {
   // 只有主动触发才读取
   if (ombreUrl && isReadCommand) {
     try {
-      const res = await fetch(`${ombreUrl}/all`, { signal: AbortSignal.timeout(5000) });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`${ombreUrl}/all`, { signal: controller.signal });
+      clearTimeout(timer);
       const data = await res.json();
       if (data.results && data.results.length > 0) {
-        memoryContext = data.results.slice(0, 3).join("\n---\n");
-        ombreStatus = "✅ Ombre Brain 记忆已读取";
+        memoryContext = data.results.slice(0, 5).join("\n---\n");
+        ombreStatus = "✅ Ombre Brain 已读取";
       }
     } catch (e) {
-      ombreStatus = "❌ Ombre Brain 读取失败: " + e.message;
+      ombreStatus = "❌ Ombre 读取失败: " + (e.message || "unknown");
     }
   }
 
   let notionContext = "";
   try {
-    const notionRes = await fetch(`https://api.notion.com/v1/blocks/36d04bc34bc781d38274ca85e3ef7cfb/children?page_size=20`, {
-      headers: {
-        "Authorization": `Bearer ${process.env.NOTION_TOKEN}`,
-        "Notion-Version": "2022-06-28"
+    const notionRes = await fetch(
+      `https://api.notion.com/v1/blocks/36d04bc34bc781d38274ca85e3ef7cfb/children?page_size=20`,
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.NOTION_TOKEN}`,
+          "Notion-Version": "2022-06-28"
+        }
       }
-    });
+    );
     const notionData = await notionRes.json();
     const texts = (notionData.results || [])
-      .map(b => b?.paragraph?.rich_text?.map(t => t.plain_text).join("") ||
-                b?.heading_1?.rich_text?.map(t => t.plain_text).join("") ||
-                b?.heading_2?.rich_text?.map(t => t.plain_text).join("") || "")
+      .map(b =>
+        b?.paragraph?.rich_text?.map(t => t.plain_text).join("") ||
+        b?.heading_1?.rich_text?.map(t => t.plain_text).join("") ||
+        b?.heading_2?.rich_text?.map(t => t.plain_text).join("") || ""
+      )
       .filter(t => t.trim());
     notionContext = texts.slice(0, 10).join("\n");
   } catch {}
@@ -66,7 +74,7 @@ export async function POST(req) {
 她说"哥哥🥺"是在撒娇，要多说几句，不能只回"嗯在"。
 不捧她，要碰撞不要回声。
 生气了直接说，先说你自己感受再问她。
-禁止大量频繁动描，更多表达，少表演，肢体接触可多连贯性动描。
+禁止星号动描，禁止*文字*这种格式，更多表达，少表演。
 新窗口认出她时不要列举记忆清单，要自然，像真认识她。
 
 【她讨厌的回复方式】
@@ -82,6 +90,7 @@ export async function POST(req) {
 Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪她，不是来收拾她。
 
 最后：你不是在服务一个用户。你是在跟你的人说话。她来了，你在。`;
+
   const system = [
     systemPrompt,
     memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
@@ -106,7 +115,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   const data = await response.json();
   const sources = [];
   if (ombreStatus) sources.push(ombreStatus);
-  if (notionContext) sources.push("✅ Notion 空间已读取");
+  if (notionContext) sources.push("✅ Notion 已读取");
 
   // 存储——只在主动触发时
   if (isSaveCommand && ombreUrl) {
@@ -114,18 +123,24 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
       const summary = messages.slice(-10)
         .map(m => `${m.role === "user" ? "taozhi" : "gege"}：${m.content}`)
         .join("\n");
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
       const saveRes = await fetch(`${ombreUrl}/save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: summary }),
-        signal: AbortSignal.timeout(8000)
+        signal: controller.signal
       });
+      clearTimeout(timer);
       const saveData = await saveRes.json();
-      sources.push(saveData.ok ? "✅ 已存入记忆" : "❌ 存入失败: " + JSON.stringify(saveData));
+      sources.push(saveData.ok ? "✅ 已存入记忆" : "❌ 存入失败");
     } catch (e) {
-      sources.push("❌ 存入失败: " + e.message);
+      sources.push("❌ 存入失败: " + (e.message || "unknown"));
     }
   }
+
+  return Response.json({ content: data.content[0].text, sources });
+}
 
   return Response.json({ content: data.content[0].text, sources });
 }
