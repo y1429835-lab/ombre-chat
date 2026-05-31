@@ -7,6 +7,7 @@ export const viewport = {
   userScalable: false,
 };
 
+
 export const metadata = { title: "Ombre Chat" };
 
 export default function RootLayout({ children }) {
