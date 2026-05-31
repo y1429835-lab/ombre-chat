@@ -120,13 +120,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
       sources.push("已存入记忆");
     } catch {}
   }
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ombre-chat", version: "1.0" } } })
-      });
-      sources.push("已存入记忆");
-    } catch {}
-  }
+       
 
   return Response.json({ content: data.content[0].text, sources });
 }
