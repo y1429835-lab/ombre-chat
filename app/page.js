@@ -52,7 +52,6 @@ export default function Home() {
     window.visualViewport?.addEventListener("scroll", update);
     update();
     return () => {
-     
   }, []);
 
   useEffect(() => {
