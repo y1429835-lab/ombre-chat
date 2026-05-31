@@ -115,8 +115,9 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
     })
   });
 
+  const data = await response.json();
   const sources = [];
-if (memoryContext) sources.push("Ombre Brain 记忆");
-if (notionContext) sources.push("Notion 空间");
-return Response.json({ content: data.content[0].text, sources });
+  if (memoryContext) sources.push("Ombre Brain 记忆");
+  if (notionContext) sources.push("Notion 空间");
+  return Response.json({ content: data.content[0].text, sources });
 }
