@@ -28,7 +28,7 @@ export async function POST(req) {
 
   let notionContext = "";
   let notionStatus = "";
-  try {
+  if (isReadCommand) try {
     async function fetchBlocks(blockId) {
       const res = await fetch(
         `https://api.notion.com/v1/blocks/${blockId}/children?page_size=20`,
