@@ -42,14 +42,13 @@ export default function Home() {
   const textareaRef = useRef(null);
 
   // 关键：用position:fixed + visualViewport跟踪，键盘弹出不移位
-  useEffect(() => {
-    const update = () => {
-      if (window.visualViewport) {
-        const vv = window.visualViewport;
-        setVpHeight(`${vv.height}px`);
-        setVpTop(`${vv.offsetTop}px`);
-      }
-    };
+ useEffect(() => {
+    if (window.visualViewport) {
+      setVpHeight(`${window.visualViewport.height}px`);
+    } else {
+      setVpHeight(`${window.innerHeight}px`);
+    }
+  }, []);
     window.visualViewport?.addEventListener("resize", update);
     window.visualViewport?.addEventListener("scroll", update);
     update();
