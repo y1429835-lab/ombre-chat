@@ -116,6 +116,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   const sources = [];
   if (ombreStatus) sources.push(ombreStatus);
   if (notionContext) sources.push("✅ Notion 已读取");
+  else sources.push("❌ Notion 未读取");
 
   // 存储——只在主动触发时
   if (isSaveCommand && ombreUrl) {
