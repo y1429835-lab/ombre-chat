@@ -1,51 +1,157 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
-const STORAGE_KEY = "ombre_chat_history";
+const SESSIONS_KEY = "ombre_sessions";
+const SESSION_PREFIX = "ombre_chat_";
+const URL_KEY = "ombre_url";
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function loadSessions() {
+  try {
+    const s = localStorage.getItem(SESSIONS_KEY);
+    return s ? JSON.parse(s) : [];
+  } catch { return []; }
+}
+
+function saveSessions(sessions) {
+  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch {}
+}
+
+function loadMessages(id) {
+  try {
+    const s = localStorage.getItem(SESSION_PREFIX + id);
+    return s ? JSON.parse(s) : [];
+  } catch { return []; }
+}
+
+function saveMessages(id, messages) {
+  try { localStorage.setItem(SESSION_PREFIX + id, JSON.stringify(messages)); } catch {}
+}
+
+function deleteSession(id) {
+  try { localStorage.removeItem(SESSION_PREFIX + id); } catch {}
+}
 
 export default function Home() {
+  const [sessions, setSessions] = useState([]);
+  const [currentId, setCurrentId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [ombreUrl, setOmbreUrl] = useState("");
   const [showSetting, setShowSetting] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
   const [editingIndex, setEditingIndex] = useState(null);
   const [editText, setEditText] = useState("");
+  const [viewportHeight, setViewportHeight] = useState("100dvh");
+
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
+  // 手机键盘处理——监听visualViewport
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setMessages(JSON.parse(saved));
-      const savedUrl = localStorage.getItem("ombre_url");
-      if (savedUrl) setOmbreUrl(savedUrl);
-    } catch {}
+    const update = () => {
+      if (window.visualViewport) {
+        setViewportHeight(`${window.visualViewport.height}px`);
+      }
+    };
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+    update();
+    return () => {
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+    };
   }, []);
 
+  // 初始化
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch {}
-  }, [messages]);
+    const savedUrl = localStorage.getItem(URL_KEY);
+    if (savedUrl) setOmbreUrl(savedUrl);
 
+    let existingSessions = loadSessions();
+    if (existingSessions.length === 0) {
+      const id = genId();
+      existingSessions = [{ id, title: "对话 1", createdAt: Date.now() }];
+      saveSessions(existingSessions);
+    }
+    setSessions(existingSessions);
+    const lastId = existingSessions[0].id;
+    setCurrentId(lastId);
+    setMessages(loadMessages(lastId));
+  }, []);
+
+  // 消息变化时存储
+  useEffect(() => {
+    if (currentId) saveMessages(currentId, messages);
+  }, [messages, currentId]);
+
+  // 自动滚到底
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   function getTime() {
     const now = new Date();
-    return `${now.getHours().toString().padStart(2,"0")}:${now.getMinutes().toString().padStart(2,"0")}`;
+    return `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
   }
 
   function saveUrl(url) {
     setOmbreUrl(url);
-    try { localStorage.setItem("ombre_url", url); } catch {}
+    try { localStorage.setItem(URL_KEY, url); } catch {}
   }
 
-  function clearHistory() {
-    if (confirm("清除所有对话记录？")) {
+  function newSession() {
+    const id = genId();
+    const n = sessions.length + 1;
+    const newSessions = [{ id, title: `对话 ${n}`, createdAt: Date.now() }, ...sessions];
+    setSessions(newSessions);
+    saveSessions(newSessions);
+    setCurrentId(id);
+    setMessages([]);
+    setShowSessions(false);
+  }
+
+  function switchSession(id) {
+    if (id === currentId) { setShowSessions(false); return; }
+    setCurrentId(id);
+    setMessages(loadMessages(id));
+    setShowSessions(false);
+  }
+
+  function deleteCurrentSession(id, e) {
+    e.stopPropagation();
+    if (sessions.length === 1) {
+      // 只剩一个，清空内容就好
       setMessages([]);
-      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      saveMessages(id, []);
+      return;
     }
+    const newSessions = sessions.filter(s => s.id !== id);
+    deleteSession(id);
+    saveSessions(newSessions);
+    setSessions(newSessions);
+    if (currentId === id) {
+      const next = newSessions[0];
+      setCurrentId(next.id);
+      setMessages(loadMessages(next.id));
+    }
+    setShowSessions(false);
+  }
+
+  // 切换会话时更新标题（取第一条用户消息前10字）
+  function updateSessionTitle(id, msgs) {
+    const first = msgs.find(m => m.role === "user");
+    if (!first) return;
+    const title = first.content.slice(0, 14);
+    setSessions(prev => {
+      const updated = prev.map(s => s.id === id ? { ...s, title } : s);
+      saveSessions(updated);
+      return updated;
+    });
   }
 
   async function callApi(msgs) {
@@ -66,15 +172,18 @@ export default function Home() {
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
     setLoading(true);
-    console.log("ombreUrl at send:", ombreUrl);
     try {
       const data = await callApi(newMessages);
-      setMessages(prev => [...prev, {
+      const updated = [...newMessages, {
         role: "assistant", content: data.content,
         time: getTime(), sources: data.sources || []
-      }]);
+      }];
+      setMessages(updated);
+      updateSessionTitle(currentId, updated);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "出错了，稍后再试。", time: getTime(), sources: [] }]);
     }
@@ -119,15 +228,21 @@ export default function Home() {
 
   return (
     <div style={{
-      display: "flex", flexDirection: "column", height: "100dvh",
-      background: "#f5f5f5", fontFamily: "-apple-system, 'PingFang SC', sans-serif",
-      maxWidth: 520, margin: "0 auto"
+      display: "flex", flexDirection: "column",
+      height: viewportHeight,
+      background: "#f5f5f5",
+      fontFamily: "-apple-system, 'PingFang SC', sans-serif",
+      maxWidth: 520, margin: "0 auto",
+      position: "relative", overflow: "hidden"
     }}>
+
+      {/* 顶部栏 */}
       <div style={{
         padding: "14px 16px 12px", background: "#fff",
         borderBottom: "1px solid #ebebeb",
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.05)"
+        flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+        zIndex: 10
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{
@@ -142,13 +257,24 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <button onClick={clearHistory} style={{ background: "none", border: "none", color: "#bbb", fontSize: 13, cursor: "pointer" }}>清除</button>
-          <button onClick={() => setShowSetting(!showSetting)} style={{ background: "none", border: "none", color: "#bbb", fontSize: 20, cursor: "pointer" }}>⋯</button>
+          <button
+            onClick={newSession}
+            style={{ background: "none", border: "none", color: "#888", fontSize: 13, cursor: "pointer", padding: "4px 6px" }}
+          >+ 新对话</button>
+          <button
+            onClick={() => { setShowSessions(!showSessions); setShowSetting(false); }}
+            style={{ background: "none", border: "none", color: "#bbb", fontSize: 13, cursor: "pointer", padding: "4px 6px" }}
+          >对话列表</button>
+          <button
+            onClick={() => { setShowSetting(!showSetting); setShowSessions(false); }}
+            style={{ background: "none", border: "none", color: "#bbb", fontSize: 20, cursor: "pointer" }}
+          >⋯</button>
         </div>
       </div>
 
+      {/* 设置面板 */}
       {showSetting && (
-        <div style={{ background: "#fff", padding: "12px 16px", borderBottom: "1px solid #ebebeb", flexShrink: 0 }}>
+        <div style={{ background: "#fff", padding: "12px 16px", borderBottom: "1px solid #ebebeb", flexShrink: 0, zIndex: 9 }}>
           <div style={{ fontSize: 12, color: "#999", marginBottom: 6 }}>Ombre Brain URL</div>
           <input
             placeholder="https://xxxx.trycloudflare.com"
@@ -163,7 +289,37 @@ export default function Home() {
         </div>
       )}
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "16px 12px" }}>
+      {/* 会话列表 */}
+      {showSessions && (
+        <div style={{
+          background: "#fff", borderBottom: "1px solid #ebebeb",
+          flexShrink: 0, zIndex: 9, maxHeight: 220, overflowY: "auto"
+        }}>
+          {sessions.map(s => (
+            <div
+              key={s.id}
+              onClick={() => switchSession(s.id)}
+              style={{
+                padding: "11px 16px",
+                background: s.id === currentId ? "#f5f5f5" : "#fff",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                cursor: "pointer", borderBottom: "1px solid #f0f0f0"
+              }}
+            >
+              <div style={{ fontSize: 14, color: s.id === currentId ? "#111" : "#555", fontWeight: s.id === currentId ? 600 : 400 }}>
+                {s.title}
+              </div>
+              <button
+                onClick={(e) => deleteCurrentSession(s.id, e)}
+                style={{ background: "none", border: "none", color: "#ccc", fontSize: 16, cursor: "pointer", padding: "0 4px" }}
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 消息区 */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "16px 12px", WebkitOverflowScrolling: "touch" }}>
         {messages.length === 0 && (
           <div style={{ textAlign: "center", marginTop: 80 }}>
             <div style={{ fontSize: 32, marginBottom: 8 }}>🖤</div>
@@ -185,8 +341,10 @@ export default function Home() {
                 color: "#fff", fontSize: 12, fontWeight: 600, marginBottom: 2
               }}>哥</div>
             )}
-            <div style={{ maxWidth: "72%", display: "flex", flexDirection: "column",
-              alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+            <div style={{
+              maxWidth: "72%", display: "flex", flexDirection: "column",
+              alignItems: m.role === "user" ? "flex-end" : "flex-start"
+            }}>
               {m.sources && m.sources.length > 0 && (
                 <div style={{ fontSize: 10, color: "#bbb", marginBottom: 3 }}>
                   📎 {m.sources.join(" · ")}
@@ -251,11 +409,11 @@ export default function Home() {
               boxShadow: "0 1px 3px rgba(0,0,0,0.08)"
             }}>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                {[0,1,2].map(i => (
+                {[0, 1, 2].map(i => (
                   <div key={i} style={{
                     width: 6, height: 6, borderRadius: "50%", background: "#ccc",
-                    animation: `bounce 1.2s ease-in-out ${i*0.2}s infinite`
-                  }}/>
+                    animation: `bounce 1.2s ease-in-out ${i * 0.2}s infinite`
+                  }} />
                 ))}
               </div>
             </div>
@@ -264,10 +422,12 @@ export default function Home() {
         <div ref={bottomRef} />
       </div>
 
+      {/* 输入区 */}
       <div style={{
         padding: "10px 12px 12px", background: "#fff",
         borderTop: "1px solid #ebebeb",
-        display: "flex", gap: 8, alignItems: "flex-end", flexShrink: 0
+        display: "flex", gap: 8, alignItems: "flex-end",
+        flexShrink: 0, zIndex: 10
       }}>
         <textarea
           ref={textareaRef}
@@ -282,14 +442,17 @@ export default function Home() {
             flex: 1, padding: "10px 14px", background: "#f5f5f5",
             border: "none", borderRadius: 22, fontSize: 15,
             resize: "none", outline: "none", lineHeight: 1.5,
-            maxHeight: 120, overflowY: "auto", fontFamily: "inherit", color: "#111"
+            maxHeight: 120, overflowY: "auto",
+            fontFamily: "inherit", color: "#111"
           }}
           onInput={e => {
             e.target.style.height = "auto";
             e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
           }}
         />
-        <button onClick={send} disabled={loading || !input.trim()}
+        <button
+          onClick={send}
+          disabled={loading || !input.trim()}
           style={{
             width: 40, height: 40, borderRadius: "50%", border: "none",
             background: input.trim() && !loading ? "#1a1a1a" : "#e0e0e0",
@@ -300,11 +463,13 @@ export default function Home() {
           ↑
         </button>
       </div>
+
       <style>{`
         @keyframes bounce {
           0%, 60%, 100% { transform: translateY(0); }
           30% { transform: translateY(-4px); }
         }
+        * { box-sizing: border-box; }
       `}</style>
     </div>
   );
