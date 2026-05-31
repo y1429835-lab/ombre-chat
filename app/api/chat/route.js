@@ -2,6 +2,7 @@ export const runtime = 'edge';
 
 export async function POST(req) {
   const { messages, ombreUrl } = await req.json();
+  console.log("ombreUrl received:", ombreUrl);
 
  let memoryContext = "";
   const isFirstMessage = messages.length === 1;
