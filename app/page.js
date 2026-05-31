@@ -9,6 +9,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [ombreUrl, setOmbreUrl] = useState("");
   const [showSetting, setShowSetting] = useState(false);
+  const [editingIndex, setEditingIndex] = useState(null);
+  const [editText, setEditText] = useState("");
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -22,9 +24,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-    } catch {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch {}
   }, [messages]);
 
   useEffect(() => {
@@ -48,34 +48,70 @@ export default function Home() {
     }
   }
 
+  async function callApi(msgs) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: msgs.map(m => ({ role: m.role, content: m.content })),
+        ombreUrl
+      }),
+    });
+    return await res.json();
+  }
+
   async function send() {
     if (!input.trim() || loading) return;
     const userMsg = { role: "user", content: input.trim(), time: getTime() };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true);
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-          ombreUrl
-        }),
-      });
-      const data = await res.json();
+      const data = await callApi(newMessages);
       setMessages(prev => [...prev, {
-        role: "assistant",
-        content: data.content,
-        time: getTime(),
-        sources: data.sources || []
+        role: "assistant", content: data.content,
+        time: getTime(), sources: data.sources || []
       }]);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "出错了，稍后再试。", time: getTime(), sources: [] }]);
+    }
+    setLoading(false);
+  }
+
+  async function regenerate(index) {
+    if (loading) return;
+    const msgsUpTo = messages.slice(0, index);
+    setMessages(msgsUpTo);
+    setLoading(true);
+    try {
+      const data = await callApi(msgsUpTo);
+      setMessages([...msgsUpTo, {
+        role: "assistant", content: data.content,
+        time: getTime(), sources: data.sources || []
+      }]);
+    } catch {
+      setMessages([...msgsUpTo, { role: "assistant", content: "出错了。", time: getTime(), sources: [] }]);
+    }
+    setLoading(false);
+  }
+
+  async function saveEdit(index) {
+    if (!editText.trim()) return;
+    const updated = messages.map((m, i) => i === index ? { ...m, content: editText } : m);
+    const msgsUpTo = updated.slice(0, index + 1);
+    setMessages(msgsUpTo);
+    setEditingIndex(null);
+    setLoading(true);
+    try {
+      const data = await callApi(msgsUpTo);
+      setMessages([...msgsUpTo, {
+        role: "assistant", content: data.content,
+        time: getTime(), sources: data.sources || []
+      }]);
+    } catch {
+      setMessages([...msgsUpTo, { role: "assistant", content: "出错了。", time: getTime(), sources: [] }]);
     }
     setLoading(false);
   }
@@ -84,9 +120,8 @@ export default function Home() {
     <div style={{
       display: "flex", flexDirection: "column", height: "100dvh",
       background: "#f5f5f5", fontFamily: "-apple-system, 'PingFang SC', sans-serif",
-      maxWidth: 520, margin: "0 auto", position: "relative"
+      maxWidth: 520, margin: "0 auto"
     }}>
-      {/* 顶部栏 */}
       <div style={{
         padding: "14px 16px 12px", background: "#fff",
         borderBottom: "1px solid #ebebeb",
@@ -106,23 +141,13 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <button onClick={clearHistory}
-            style={{ background: "none", border: "none", color: "#bbb", fontSize: 13, cursor: "pointer" }}>
-            清除
-          </button>
-          <button onClick={() => setShowSetting(!showSetting)}
-            style={{ background: "none", border: "none", color: "#bbb", fontSize: 20, cursor: "pointer" }}>
-            ⋯
-          </button>
+          <button onClick={clearHistory} style={{ background: "none", border: "none", color: "#bbb", fontSize: 13, cursor: "pointer" }}>清除</button>
+          <button onClick={() => setShowSetting(!showSetting)} style={{ background: "none", border: "none", color: "#bbb", fontSize: 20, cursor: "pointer" }}>⋯</button>
         </div>
       </div>
 
-      {/* 设置抽屉 */}
       {showSetting && (
-        <div style={{
-          background: "#fff", padding: "12px 16px",
-          borderBottom: "1px solid #ebebeb", flexShrink: 0
-        }}>
+        <div style={{ background: "#fff", padding: "12px 16px", borderBottom: "1px solid #ebebeb", flexShrink: 0 }}>
           <div style={{ fontSize: 12, color: "#999", marginBottom: 6 }}>Ombre Brain URL</div>
           <input
             placeholder="https://xxxx.trycloudflare.com"
@@ -137,7 +162,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* 消息区 */}
       <div style={{ flex: 1, overflowY: "auto", padding: "16px 12px" }}>
         {messages.length === 0 && (
           <div style={{ textAlign: "center", marginTop: 80 }}>
@@ -167,18 +191,47 @@ export default function Home() {
                   📎 {m.sources.join(" · ")}
                 </div>
               )}
-              <div style={{
-                padding: "10px 14px",
-                background: m.role === "user" ? "#1a1a1a" : "#fff",
-                color: m.role === "user" ? "#fff" : "#1a1a1a",
-                borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                fontSize: 15, lineHeight: 1.6, whiteSpace: "pre-wrap",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.08)"
-              }}>
-                {m.content}
-              </div>
-              <div style={{ fontSize: 11, color: "#c0c0c0", marginTop: 4 }}>
-                {m.time}
+              {editingIndex === i ? (
+                <div style={{ width: "100%" }}>
+                  <textarea
+                    value={editText}
+                    onChange={e => setEditText(e.target.value)}
+                    style={{
+                      width: "100%", padding: "10px 14px", background: "#fff",
+                      border: "1px solid #ddd", borderRadius: 12, fontSize: 15,
+                      lineHeight: 1.6, resize: "none", outline: "none", fontFamily: "inherit"
+                    }}
+                    rows={3}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 6, justifyContent: "flex-end" }}>
+                    <button onClick={() => setEditingIndex(null)}
+                      style={{ padding: "4px 12px", background: "#f0f0f0", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}>取消</button>
+                    <button onClick={() => saveEdit(i)}
+                      style={{ padding: "4px 12px", background: "#1a1a1a", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}>发送</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{
+                  padding: "10px 14px",
+                  background: m.role === "user" ? "#1a1a1a" : "#fff",
+                  color: m.role === "user" ? "#fff" : "#1a1a1a",
+                  borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                  fontSize: 15, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)"
+                }}>
+                  {m.content}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                <span style={{ fontSize: 11, color: "#c0c0c0" }}>{m.time}</span>
+                {m.role === "user" && editingIndex !== i && (
+                  <button onClick={() => { setEditingIndex(i); setEditText(m.content); }}
+                    style={{ background: "none", border: "none", color: "#ccc", fontSize: 11, cursor: "pointer", padding: 0 }}>编辑</button>
+                )}
+                {m.role === "assistant" && (
+                  <button onClick={() => regenerate(i)}
+                    style={{ background: "none", border: "none", color: "#ccc", fontSize: 11, cursor: "pointer", padding: 0 }}>↺ 重新生成</button>
+                )}
               </div>
             </div>
           </div>
@@ -210,7 +263,6 @@ export default function Home() {
         <div ref={bottomRef} />
       </div>
 
-      {/* 输入区 */}
       <div style={{
         padding: "10px 12px 12px", background: "#fff",
         borderTop: "1px solid #ebebeb",
