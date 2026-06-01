@@ -190,6 +190,7 @@ export default function Home() {
         messages: msgs.map(m => ({ role: m.role, content: m.content })),
         ombreUrl,
         summary: currentSummary || ""
+        clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }),
       }),
     });
     return await res.json();
