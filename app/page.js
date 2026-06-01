@@ -99,9 +99,10 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: `以下是桃枝和哥哥的对话，用2-3句话总结聊了什么，保留重要细节和情感，第一人称是哥哥：\n\n${toSummarize.map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}` }],
-          ombreUrl: "",
-          isSummaryRequest: true
+          messages: msgs.map(m => ({ role: m.role, content: m.content })),
+          ombreUrl,
+          summary: currentSummary || "",
+          clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" })
         }),
       });
       const data = await res.json();
