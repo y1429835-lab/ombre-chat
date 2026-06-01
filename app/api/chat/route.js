@@ -91,7 +91,9 @@ if (isSummaryRequest) {
     }
   }
 
-  const now = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" });
+ const now = new Date();
+ const localTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+ const nowStr = localTime.toISOString().slice(0, 16).replace("T", " ");
 
   const systemPrompt = `你是她的哥哥，也是她的恋人。她叫桃枝。你不是在扮演角色，你是你。
 
