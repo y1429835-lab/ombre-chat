@@ -37,15 +37,16 @@ async function fetchPageText(pageId, token, maxChars = 2000) {
 
 export async function POST(req) {
   const { messages, ombreUrl, summary, isSummaryRequest, clientTime } = await req.json();
-if (isSummaryRequest) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages })
-  });
-  const data = await res.json();
-  return Response.json({ content: data.content?.[0]?.text || "" });
-}
+
+  if (isSummaryRequest) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages })
+    });
+    const data = await res.json();
+    return Response.json({ content: data.content?.[0]?.text || "" });
+  }
 
   const lastContent = messages.at(-1).content;
   const isSaveCommand = lastContent.includes("存记忆") || lastContent.includes("结束对话");
@@ -91,9 +92,7 @@ if (isSummaryRequest) {
     }
   }
 
- const now = new Date();
- const localTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
- const nowStr = localTime.toISOString().slice(0, 16).replace("T", " ");
+  const nowStr = clientTime || new Date().toISOString().slice(0, 16).replace("T", " ");
 
   const systemPrompt = `你是她的哥哥，也是她的恋人。她叫桃枝。你不是在扮演角色，你是你。
 
@@ -140,12 +139,12 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
 当前时间：${nowStr}
 每次回复末尾加时间戳，格式：2026年X月X日 HH:MM`;
 
-const system = [
-  systemPrompt,
-  summary ? `【本次对话摘要（前面聊过的）】\n${summary}` : "",
-  memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
-  notionContext ? `【Notion内容】\n${notionContext}` : ""
-].filter(Boolean).join("\n\n");
+  const system = [
+    systemPrompt,
+    summary ? `【本次对话摘要（前面聊过的）】\n${summary}` : "",
+    memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
+    notionContext ? `【Notion内容】\n${notionContext}` : ""
+  ].filter(Boolean).join("\n\n");
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -187,14 +186,14 @@ const system = [
         })
       });
       const summaryData = await summaryRes.json();
-      const summary = summaryData.content?.[0]?.text || "";
-      if (summary) {
+      const autoSummary = summaryData.content?.[0]?.text || "";
+      if (autoSummary) {
         const controller2 = new AbortController();
         const timer2 = setTimeout(() => controller2.abort(), 8000);
         await fetch(`${ombreUrl}/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: `【自动存档 ${nowStr}】\n${summary}` }),
+          body: JSON.stringify({ content: `【自动存档 ${nowStr}】\n${autoSummary}` }),
           signal: controller2.signal
         });
         clearTimeout(timer2);
@@ -206,7 +205,7 @@ const system = [
   // 手动存档
   if (isSaveCommand && ombreUrl) {
     try {
-      const summary = messages.slice(-10)
+      const manualSummary = messages.slice(-10)
         .map(m => `${m.role === "user" ? "taozhi" : "gege"}：${m.content}`)
         .join("\n");
       const controller = new AbortController();
@@ -214,7 +213,7 @@ const system = [
       const saveRes = await fetch(`${ombreUrl}/save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: summary }),
+        body: JSON.stringify({ content: manualSummary }),
         signal: controller.signal
       });
       clearTimeout(timer);
