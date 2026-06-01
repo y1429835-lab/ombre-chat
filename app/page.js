@@ -45,9 +45,11 @@ export default function Home() {
   const [editingIndex, setEditingIndex] = useState(null);
   const [editText, setEditText] = useState("");
   const [vpHeight, setVpHeight] = useState("100dvh");
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
+  const scrollRef = useRef(null);
 
   useEffect(() => {
     if (window.visualViewport) {
@@ -298,7 +300,7 @@ export default function Home() {
         )}
 
         {/* 消息区 */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 12px", WebkitOverflowScrolling: "touch" }}>
+        <div ref={scrollRef} onScroll={() => { const el = scrollRef.current; if (!el) return; setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 120); }} style={{ flex: 1, overflowY: "auto", padding: "16px 12px", WebkitOverflowScrolling: "touch" }}>
           {messages.length === 0 && (
             <div style={{ textAlign: "center", marginTop: 80 }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>🖤</div>
@@ -366,6 +368,18 @@ export default function Home() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {/* 回到底部按钮 */}
+        {showScrollBtn && (
+          <button onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })} style={{
+            position: "absolute", right: 16, bottom: 80,
+            width: 36, height: 36, borderRadius: "50%",
+            background: "rgba(26,26,26,0.75)", border: "none",
+            color: "#fff", fontSize: 16, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.2)", zIndex: 20
+          }}>↓</button>
+        )}
 
         {/* 输入区 */}
         <div style={{
