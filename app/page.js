@@ -186,12 +186,13 @@ export default function Home() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: msgs.map(m => ({ role: m.role, content: m.content })),
-        ombreUrl,
-        summary: currentSummary || "",
-        clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }),
-    });
+    body: JSON.stringify({
+      messages: msgs.map(m => ({ role: m.role, content: m.content })),
+      ombreUrl,
+      summary: currentSummary || "",
+      clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }),
+  }),
+ });
     return await res.json();
   }
 
