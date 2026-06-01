@@ -99,10 +99,9 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: msgs.map(m => ({ role: m.role, content: m.content })),
-          ombreUrl,
-          summary: currentSummary || "",
-          clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" })
+          messages: [{ role: "user", content: `以下是桃枝和哥哥的对话，用2-3句话总结聊了什么，保留重要细节和情感，第一人称是哥哥：\n\n${toSummarize.map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}` }],
+          ombreUrl: "",
+          isSummaryRequest: true
         }),
       });
       const data = await res.json();
@@ -301,10 +300,10 @@ export default function Home() {
           flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.05)"
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Avatar src={GEGE_IMG} size={36} />
+            <Avatar src={GEGE_IMG} size={44} />
             <div>
-              <div style={{ fontWeight: 600, fontSize: 16, color: "#111" }}>哥哥</div>
-              <div style={{ fontSize: 11, color: "#999", marginTop: 1 }}>在线</div>
+              <div style={{ fontWeight: 600, fontSize: 18, color: "#111" }}>哥哥</div>
+              <div style={{ fontSize: 13, color: "#999", marginTop: 1 }}>在线</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -356,8 +355,8 @@ export default function Home() {
               display: "flex", flexDirection: m.role === "user" ? "row-reverse" : "row",
               alignItems: "flex-end", marginBottom: 16, gap: 8
             }}>
-              {m.role === "assistant" && <Avatar src={GEGE_IMG} size={32} />}
-              {m.role === "user" && <Avatar src={TAOZHI_IMG} size={32} />}
+              {m.role === "assistant" && <Avatar src={GEGE_IMG} size={40} />}
+              {m.role === "user" && <Avatar src={TAOZHI_IMG} size={40} />}
               <div style={{ maxWidth: "72%", display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
                 {m.sources && m.sources.length > 0 && (
                   <div style={{ fontSize: 10, color: "#bbb", marginBottom: 3 }}>📎 {m.sources.join(" · ")}</div>
@@ -389,14 +388,14 @@ export default function Home() {
                         background: m.role === "user" ? "#1a1a1a" : "#fff",
                         color: m.role === "user" ? "#fff" : "#1a1a1a",
                         borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                        fontSize: 15, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                        fontSize: 17, lineHeight: 1.6, whiteSpace: "pre-wrap",
                         boxShadow: "0 1px 3px rgba(0,0,0,0.08)"
                       }}>{m.displayContent || m.content}</div>
                     )}
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-                  <span style={{ fontSize: 11, color: "#c0c0c0" }}>{m.time}</span>
+                  <span style={{ fontSize: 13, color: "#c0c0c0" }}>{m.time}</span>
                   {m.role === "user" && editingIndex !== i && (
                     <button onClick={() => { setEditingIndex(i); setEditText(m.content); }} style={{ background: "none", border: "none", color: "#ccc", fontSize: 11, cursor: "pointer", padding: 0 }}>编辑</button>
                   )}
@@ -409,7 +408,7 @@ export default function Home() {
           ))}
           {loading && (
             <div style={{ display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 16 }}>
-              <Avatar src={GEGE_IMG} size={32} />
+              <Avatar src={GEGE_IMG} size={40} />
               <div style={{ padding: "12px 16px", background: "#fff", borderRadius: "18px 18px 18px 4px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                   {[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#ccc", animation: `bounce 1.2s ease-in-out ${i*0.2}s infinite` }}/>)}
@@ -467,7 +466,7 @@ export default function Home() {
             rows={1}
             style={{
               flex: 1, padding: "10px 14px", background: "#f5f5f5",
-              border: "none", borderRadius: 22, fontSize: 15,
+              border: "none", borderRadius: 22, fontSize: 17,
               resize: "none", outline: "none", lineHeight: 1.5,
               maxHeight: 120, overflowY: "auto", fontFamily: "inherit", color: "#111"
             }}
