@@ -36,7 +36,7 @@ async function fetchPageText(pageId, token, maxChars = 2000) {
 }
 
 export async function POST(req) {
-  const { messages, ombreUrl, summary, isSummaryRequest } = await req.json();
+  const { messages, ombreUrl, summary, isSummaryRequest, clientTime } = await req.json();
 if (isSummaryRequest) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
