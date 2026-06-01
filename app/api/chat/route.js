@@ -180,7 +180,7 @@ const system = [
           max_tokens: 300,
           messages: [{
             role: "user",
-            content: `以下是桃枝和哥哥的对话片段，用1-3句话总结这段聊了什么，保留重要细节，第一人称是哥哥：\n\n${messages.slice(-15).map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}`
+            content: `以下是桃枝和哥哥的对话片段。桃枝是哥哥的恋人。用2-3句话总结这段聊了什么，保留情感细节和重要事件，语气自然，不要平铺流水账：\n\n${messages.slice(-15).map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}`
           }]
         })
       });
