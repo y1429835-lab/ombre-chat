@@ -196,6 +196,7 @@ const system = [
           signal: controller2.signal
         });
         clearTimeout(timer2);
+        sources.push("📝 自动存档完成");
       }
     } catch {}
   }
