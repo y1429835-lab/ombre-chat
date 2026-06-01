@@ -138,11 +138,12 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
 当前时间：${now}
 每次回复末尾加时间戳，格式：2026年X月X日 HH:MM`;
 
-  const system = [
-    systemPrompt,
-    memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
-    notionContext ? `【Notion内容】\n${notionContext}` : ""
-  ].filter(Boolean).join("\n\n");
+const system = [
+  systemPrompt,
+  summary ? `【本次对话摘要（前面聊过的）】\n${summary}` : "",
+  memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
+  notionContext ? `【Notion内容】\n${notionContext}` : ""
+].filter(Boolean).join("\n\n");
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
