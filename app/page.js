@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 
 const SESSIONS_KEY = "ombre_sessions";
 const SESSION_PREFIX = "ombre_chat_";
+const SUMMARY_PREFIX = "ombre_summary_";
 const URL_KEY = "ombre_url";
 
 function genId() {
@@ -20,14 +21,22 @@ function loadMessages(id) {
 function saveMessages(id, messages) {
   try { localStorage.setItem(SESSION_PREFIX + id, JSON.stringify(messages)); } catch {}
 }
+function loadSummary(id) {
+  try { const s = localStorage.getItem(SUMMARY_PREFIX + id); return s || ""; } catch { return ""; }
+}
+function saveSummary(id, summary) {
+  try { localStorage.setItem(SUMMARY_PREFIX + id, summary); } catch {}
+}
 function deleteSession(id) {
-  try { localStorage.removeItem(SESSION_PREFIX + id); } catch {}
+  try { localStorage.removeItem(SESSION_PREFIX + id); localStorage.removeItem(SUMMARY_PREFIX + id); } catch {}
 }
 
 export default function Home() {
   const [sessions, setSessions] = useState([]);
   const [currentId, setCurrentId] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [summary, setSummary] = useState("");
+  const [summarizedCount, setSummarizedCount] = useState(0);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [ombreUrl, setOmbreUrl] = useState("");
@@ -40,7 +49,6 @@ export default function Home() {
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
-  // 锁住初始高度，iOS 15键盘弹出不跳
   useEffect(() => {
     if (window.visualViewport) {
       setVpHeight(`${window.visualViewport.height}px`);
@@ -62,6 +70,8 @@ export default function Home() {
     const lastId = existing[0].id;
     setCurrentId(lastId);
     setMessages(loadMessages(lastId));
+    setSummary(loadSummary(lastId));
+    setSummarizedCount(0);
   }, []);
 
   useEffect(() => {
@@ -71,6 +81,32 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // 滚动摘要：每10条新消息自动压缩
+  async function tryAutoSummarize(msgs, prevSummarizedCount, prevSummary, sessionId) {
+    const newCount = msgs.length - prevSummarizedCount;
+    if (newCount < 10) return { summary: prevSummary, summarizedCount: prevSummarizedCount };
+    const toSummarize = msgs.slice(prevSummarizedCount, prevSummarizedCount + 10);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: `以下是桃枝和哥哥的对话，用2-3句话总结聊了什么，保留重要细节和情感，第一人称是哥哥：\n\n${toSummarize.map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}` }],
+          ombreUrl: "",
+          isSummaryRequest: true
+        }),
+      });
+      const data = await res.json();
+      const newPart = data.content || "";
+      const newSummary = prevSummary ? `${prevSummary}\n${newPart}` : newPart;
+      const newCount2 = prevSummarizedCount + 10;
+      saveSummary(sessionId, newSummary);
+      return { summary: newSummary, summarizedCount: newCount2 };
+    } catch {
+      return { summary: prevSummary, summarizedCount: prevSummarizedCount };
+    }
+  }
 
   function getTime() {
     const now = new Date();
@@ -88,22 +124,31 @@ export default function Home() {
     saveSessions(newSessions);
     setCurrentId(id);
     setMessages([]);
+    setSummary("");
+    setSummarizedCount(0);
     setShowSessions(false);
   }
   function switchSession(id) {
     if (id === currentId) { setShowSessions(false); return; }
     setCurrentId(id);
     setMessages(loadMessages(id));
+    setSummary(loadSummary(id));
+    setSummarizedCount(0);
     setShowSessions(false);
   }
   function removeSession(id, e) {
     e.stopPropagation();
-    if (sessions.length === 1) { setMessages([]); saveMessages(id, []); setShowSessions(false); return; }
+    if (sessions.length === 1) { setMessages([]); saveMessages(id, []); saveSummary(id, ""); setSummary(""); setShowSessions(false); return; }
     const next = sessions.filter(s => s.id !== id);
     deleteSession(id);
     saveSessions(next);
     setSessions(next);
-    if (currentId === id) { setCurrentId(next[0].id); setMessages(loadMessages(next[0].id)); }
+    if (currentId === id) {
+      setCurrentId(next[0].id);
+      setMessages(loadMessages(next[0].id));
+      setSummary(loadSummary(next[0].id));
+      setSummarizedCount(0);
+    }
     setShowSessions(false);
   }
   function updateTitle(id, msgs) {
@@ -113,11 +158,15 @@ export default function Home() {
     setSessions(prev => { const u = prev.map(s => s.id === id ? { ...s, title } : s); saveSessions(u); return u; });
   }
 
-  async function callApi(msgs) {
+  async function callApi(msgs, currentSummary) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: msgs.map(m => ({ role: m.role, content: m.content })), ombreUrl }),
+      body: JSON.stringify({
+        messages: msgs.map(m => ({ role: m.role, content: m.content })),
+        ombreUrl,
+        summary: currentSummary || ""
+      }),
     });
     return await res.json();
   }
@@ -131,7 +180,11 @@ export default function Home() {
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true);
     try {
-      const data = await callApi(newMessages);
+      // 先检查是否需要自动摘要
+      const { summary: newSummary, summarizedCount: newCount } = await tryAutoSummarize(newMessages, summarizedCount, summary, currentId);
+      if (newCount !== summarizedCount) { setSummary(newSummary); setSummarizedCount(newCount); }
+
+      const data = await callApi(newMessages, newSummary);
       const updated = [...newMessages, { role: "assistant", content: data.content, time: getTime(), sources: data.sources || [] }];
       setMessages(updated);
       updateTitle(currentId, updated);
@@ -147,7 +200,7 @@ export default function Home() {
     setMessages(msgsUpTo);
     setLoading(true);
     try {
-      const data = await callApi(msgsUpTo);
+      const data = await callApi(msgsUpTo, summary);
       setMessages([...msgsUpTo, { role: "assistant", content: data.content, time: getTime(), sources: data.sources || [] }]);
     } catch {
       setMessages([...msgsUpTo, { role: "assistant", content: "出错了。", time: getTime(), sources: [] }]);
@@ -163,7 +216,7 @@ export default function Home() {
     setEditingIndex(null);
     setLoading(true);
     try {
-      const data = await callApi(msgsUpTo);
+      const data = await callApi(msgsUpTo, summary);
       setMessages([...msgsUpTo, { role: "assistant", content: data.content, time: getTime(), sources: data.sources || [] }]);
     } catch {
       setMessages([...msgsUpTo, { role: "assistant", content: "出错了。", time: getTime(), sources: [] }]);
@@ -183,15 +236,9 @@ export default function Home() {
       `}</style>
 
       <div style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: vpHeight,
-        display: "flex",
-        flexDirection: "column",
-        background: "#f5f5f5",
-        fontFamily: "-apple-system, 'PingFang SC', sans-serif",
+        position: "fixed", top: 0, left: 0, right: 0,
+        height: vpHeight, display: "flex", flexDirection: "column",
+        background: "#f5f5f5", fontFamily: "-apple-system, 'PingFang SC', sans-serif",
         overflow: "hidden"
       }}>
 
