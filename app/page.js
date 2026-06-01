@@ -191,7 +191,6 @@ export default function Home() {
         ombreUrl,
         summary: currentSummary || ""
         clientTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }),
-      }),
     });
     return await res.json();
   }
