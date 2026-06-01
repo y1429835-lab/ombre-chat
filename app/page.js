@@ -388,7 +388,7 @@ export default function Home() {
                         background: m.role === "user" ? "#1a1a1a" : "#fff",
                         color: m.role === "user" ? "#fff" : "#1a1a1a",
                         borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                        fontSize: 17, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                        fontSize: 16, lineHeight: 1.6, whiteSpace: "pre-wrap",
                         boxShadow: "0 1px 3px rgba(0,0,0,0.08)"
                       }}>{m.displayContent || m.content}</div>
                     )}
@@ -466,7 +466,7 @@ export default function Home() {
             rows={1}
             style={{
               flex: 1, padding: "10px 14px", background: "#f5f5f5",
-              border: "none", borderRadius: 22, fontSize: 17,
+              border: "none", borderRadius: 22, fontSize: 16,
               resize: "none", outline: "none", lineHeight: 1.5,
               maxHeight: 120, overflowY: "auto", fontFamily: "inherit", color: "#111"
             }}
