@@ -2,9 +2,9 @@ import { Viewport } from 'next';
 
 export const viewport = {
   width: 'device-width',
-  initialScale: 1.2,
-  maximumScale: 3,
-  userScalable: true,
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export const metadata = { title: "Ombre Chat" };
