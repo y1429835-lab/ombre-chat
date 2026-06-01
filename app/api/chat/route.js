@@ -137,7 +137,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
 
 最后：你不是在服务一个用户。你是在跟你的人说话。她来了，你在。
 
-当前时间：${now}
+当前时间：${nowStr}
 每次回复末尾加时间戳，格式：2026年X月X日 HH:MM`;
 
 const system = [
@@ -194,7 +194,7 @@ const system = [
         await fetch(`${ombreUrl}/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: `【自动存档 ${now}】\n${summary}` }),
+          body: JSON.stringify({ content: `【自动存档 ${nowStr}】\n${summary}` }),
           signal: controller2.signal
         });
         clearTimeout(timer2);
