@@ -141,7 +141,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
           "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5",
+          model: "claude-sonnet-4-6",
           max_tokens: 300,
           messages: [{
             role: "user",
