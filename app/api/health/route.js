@@ -2,7 +2,6 @@ export const runtime = 'edge';
 
 export async function POST(request) {
   try {
-    const body = await request.json();
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
@@ -10,8 +9,16 @@ export async function POST(request) {
       return Response.json({ error: 'Missing config' }, { status: 500 });
     }
 
-    const metrics = [];
+    const text = await request.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    }
+
     const data = body.data || body;
+    const metrics = [];
 
     for (const [metricName, entries] of Object.entries(data)) {
       if (!Array.isArray(entries)) continue;
