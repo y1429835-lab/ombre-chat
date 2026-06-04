@@ -17,19 +17,20 @@ export async function POST(request) {
       return Response.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
-    const data = body.data || body;
+    const metrics_list = body?.data?.metrics || [];
     const metrics = [];
 
-    for (const [metricName, entries] of Object.entries(data)) {
-      if (!Array.isArray(entries)) continue;
-      for (const entry of entries) {
-        const date = entry.date?.split(' ')[0] || entry.startDate?.split(' ')[0];
+    for (const metric of metrics_list) {
+      const metricName = metric.name;
+      const unit = metric.units || '';
+      for (const entry of (metric.data || [])) {
+        const date = entry.date?.split(' ')[0];
         if (!date) continue;
         metrics.push({
           date,
           metric_name: metricName,
-          value: parseFloat(entry.qty ?? entry.value ?? 0),
-          unit: entry.units || entry.unit || '',
+          value: parseFloat(entry.qty ?? 0),
+          unit,
           source: entry.source || 'iPhone',
         });
       }
