@@ -9,12 +9,17 @@ export async function POST(request) {
       return Response.json({ error: 'Missing config' }, { status: 500 });
     }
 
-    const text = await request.text();
     let body;
-    try {
+    const contentType = request.headers.get('content-type') || '';
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      const file = formData.get('file') || [...formData.values()][0];
+      const text = await file.text();
       body = JSON.parse(text);
-    } catch {
-      return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    } else {
+      const text = await request.text();
+      body = JSON.parse(text);
     }
 
     const metrics_list = body?.data?.metrics || [];
