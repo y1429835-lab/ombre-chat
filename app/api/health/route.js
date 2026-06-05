@@ -1,6 +1,18 @@
-export const runtime = 'edge';
+export const maxDuration = 60;
+
 export async function GET() {
   return Response.json({ status: 'ok' });
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
 }
 
 export async function POST(request) {
@@ -48,23 +60,29 @@ export async function POST(request) {
       return Response.json({ message: 'No data', count: 0 });
     }
 
-    const res = await fetch(`${supabaseUrl}/rest/v1/health_data`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Prefer': 'resolution=merge-duplicates',
-      },
-      body: JSON.stringify(metrics),
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      return Response.json({ error: err }, { status: 500 });
+    // 分批写入，每批500条
+    const batchSize = 500;
+    let totalWritten = 0;
+    for (let i = 0; i < metrics.length; i += batchSize) {
+      const batch = metrics.slice(i, i + batchSize);
+      const res = await fetch(`${supabaseUrl}/rest/v1/health_data`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Prefer': 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify(batch),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        return Response.json({ error: err, written: totalWritten }, { status: 500 });
+      }
+      totalWritten += batch.length;
     }
 
-    return Response.json({ message: 'ok', count: metrics.length });
+    return Response.json({ message: 'ok', count: totalWritten });
 
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
