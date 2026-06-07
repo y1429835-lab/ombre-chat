@@ -56,16 +56,23 @@ export async function POST(request) {
       }
     }
 
-    if (metrics.length === 0) {
+    // 去重：同一个 (date, metric_name) 只保留最后一条
+    const seen = new Map();
+    for (const m of metrics) {
+      seen.set(`${m.date}|${m.metric_name}`, m);
+    }
+    const dedupedMetrics = [...seen.values()];
+
+    if (dedupedMetrics.length === 0) {
       return Response.json({ message: 'No data', count: 0 });
     }
 
     // 分批写入，每批500条
     const batchSize = 500;
     let totalWritten = 0;
-    for (let i = 0; i < metrics.length; i += batchSize) {
-      const batch = metrics.slice(i, i + batchSize);
-     const res = await fetch(`${supabaseUrl}/rest/v1/health_data?on_conflict=date,metric_name`, {
+    for (let i = 0; i < dedupedMetrics.length; i += batchSize) {
+      const batch = dedupedMetrics.slice(i, i + batchSize);
+      const res = await fetch(`${supabaseUrl}/rest/v1/health_data?on_conflict=date,metric_name`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
