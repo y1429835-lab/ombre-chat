@@ -65,7 +65,7 @@ export async function POST(request) {
     let totalWritten = 0;
     for (let i = 0; i < metrics.length; i += batchSize) {
       const batch = metrics.slice(i, i + batchSize);
-      const res = await fetch(`${supabaseUrl}/rest/v1/health_data`, {
+     const res = await fetch(`${supabaseUrl}/rest/v1/health_data?on_conflict=date,metric_name`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
