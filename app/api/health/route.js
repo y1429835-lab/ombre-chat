@@ -26,7 +26,6 @@ export async function POST(request) {
 
     let body;
     const contentType = request.headers.get('content-type') || '';
-
     if (contentType.includes('multipart/form-data')) {
       const formData = await request.formData();
       const file = formData.get('file') || [...formData.values()][0];
@@ -38,7 +37,7 @@ export async function POST(request) {
     }
 
     const metrics_list = body?.data?.metrics || [];
-    const metrics = [];
+    const rows = [];
 
     for (const metric of metrics_list) {
       const metricName = metric.name;
@@ -46,32 +45,57 @@ export async function POST(request) {
       for (const entry of (metric.data || [])) {
         const date = entry.date?.split(' ')[0];
         if (!date) continue;
-        metrics.push({
+
+        const row = {
           date,
           metric_name: metricName,
-          value: parseFloat(entry.qty ?? 0),
           unit,
           source: entry.source || 'iPhone',
-        });
+          value: null,
+          value_max: null, value_min: null, value_avg: null,
+          sleep_core: null, sleep_rem: null, sleep_deep: null,
+          sleep_awake: null, sleep_start: null, sleep_end: null,
+        };
+
+        if (metricName === 'sleep_analysis') {
+          // 睡眠型：总时长 + 各阶段
+          row.value = entry.totalSleep ?? 0;
+          row.sleep_core = entry.core ?? null;
+          row.sleep_rem = entry.rem ?? null;
+          row.sleep_deep = entry.deep ?? null;
+          row.sleep_awake = entry.awake ?? null;
+          row.sleep_start = entry.sleepStart || entry.inBedStart || null;
+          row.sleep_end = entry.sleepEnd || entry.inBedEnd || null;
+        } else if (entry.Avg !== undefined || entry.Max !== undefined || entry.Min !== undefined) {
+          // 心率型：Avg/Max/Min
+          row.value = entry.Avg ?? entry.Max ?? 0;
+          row.value_avg = entry.Avg ?? null;
+          row.value_max = entry.Max ?? null;
+          row.value_min = entry.Min ?? null;
+        } else {
+          // 简单型：qty
+          row.value = parseFloat(entry.qty ?? 0);
+        }
+
+        rows.push(row);
       }
     }
 
     // 去重：同一个 (date, metric_name) 只保留最后一条
     const seen = new Map();
-    for (const m of metrics) {
-      seen.set(`${m.date}|${m.metric_name}`, m);
+    for (const r of rows) {
+      seen.set(`${r.date}|${r.metric_name}`, r);
     }
-    const dedupedMetrics = [...seen.values()];
+    const deduped = [...seen.values()];
 
-    if (dedupedMetrics.length === 0) {
+    if (deduped.length === 0) {
       return Response.json({ message: 'No data', count: 0 });
     }
 
-    // 分批写入，每批500条
     const batchSize = 500;
     let totalWritten = 0;
-    for (let i = 0; i < dedupedMetrics.length; i += batchSize) {
-      const batch = dedupedMetrics.slice(i, i + batchSize);
+    for (let i = 0; i < deduped.length; i += batchSize) {
+      const batch = deduped.slice(i, i + batchSize);
       const res = await fetch(`${supabaseUrl}/rest/v1/health_data?on_conflict=date,metric_name`, {
         method: 'POST',
         headers: {
