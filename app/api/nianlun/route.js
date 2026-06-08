@@ -2,17 +2,17 @@ export const maxDuration = 60;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY;
 
-// 调用DeepSeek算embedding
+// 调用硅基流动 bge-m3 算embedding
 async function getEmbedding(text) {
-  const res = await fetch('https://api.deepseek.com/v1/embeddings', {
+  const res = await fetch('https://api.siliconflow.cn/v1/embeddings', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Authorization': `Bearer ${SILICONFLOW_API_KEY}`,
     },
-    body: JSON.stringify({ model: 'deepseek-embedding', input: text }),
+    body: JSON.stringify({ model: 'BAAI/bge-m3', input: text }),
   });
   if (!res.ok) {
     const err = await res.text();
