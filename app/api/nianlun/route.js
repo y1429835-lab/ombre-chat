@@ -2,6 +2,7 @@ export const maxDuration = 60;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY;
 
 // 调用硅基流动 bge-m3 算embedding
@@ -22,13 +23,14 @@ async function getEmbedding(text) {
   return data.data[0].embedding;
 }
 
-async function sb(path, options = {}) {
+async function sb(path, options = {}, useServiceKey = false) {
+  const key = useServiceKey ? SUPABASE_SERVICE_KEY : SUPABASE_KEY;
   return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'apikey': key,
+      'Authorization': `Bearer ${key}`,
       ...(options.headers || {}),
     },
   });
@@ -106,7 +108,7 @@ export async function POST(request) {
     if (action === 'feel') {
       const { content, context, valence, arousal, memory_id } = body;
       if (!content) return Response.json({ error: 'content required' }, { status: 400 });
-      const res = await sb('nianlun_feelings', {
+    const res = await sb('nianlun_feelings', {
         method: 'POST',
         headers: { 'Prefer': 'return=representation' },
         body: JSON.stringify([{
@@ -114,7 +116,7 @@ export async function POST(request) {
           valence: valence ?? null, arousal: arousal ?? null,
           memory_id: memory_id ?? null,
         }]),
-      });
+      }, true);
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       return Response.json({ message: 'felt' });
     }
