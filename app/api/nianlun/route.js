@@ -51,7 +51,7 @@ export async function OPTIONS() {
 
 export async function POST(request) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !DEEPSEEK_API_KEY) {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !SILICONFLOW_API_KEY) {
       return Response.json({ error: 'Missing config' }, { status: 500 });
     }
 
