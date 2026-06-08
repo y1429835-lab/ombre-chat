@@ -120,7 +120,29 @@ export async function POST(request) {
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       return Response.json({ message: 'felt' });
     }
-
+// ===== 批量补embedding =====
+    if (action === 'backfill') {
+      // 取出所有还没有embedding的记忆
+      const res = await sb('nianlun_memory?embedding=is.null&select=id,content');
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const rows = await res.json();
+      let done = 0;
+      const errors = [];
+      for (const row of rows) {
+        try {
+          const embedding = await getEmbedding(row.content);
+          const up = await sb(`nianlun_memory?id=eq.${row.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ embedding }),
+          });
+          if (up.ok) done++;
+          else errors.push(`id ${row.id}: ${await up.text()}`);
+        } catch (e) {
+          errors.push(`id ${row.id}: ${e.message}`);
+        }
+      }
+      return Response.json({ message: 'backfill done', total: rows.length, done, errors });
+    }
     return Response.json({ error: 'unknown action' }, { status: 400 });
 
   } catch (e) {
