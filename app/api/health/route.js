@@ -81,10 +81,28 @@ export async function POST(request) {
       }
     }
 
-    // 去重：同一个 (date, metric_name) 只保留最后一条
+    // 累加型指标：一天内所有时段要相加（步数、距离、卡路里、上楼层数等）
+    const SUM_METRICS = new Set([
+      'step_count', 'walking_running_distance', 'distance_walking_running',
+      'active_energy', 'active_energy_burned', 'basal_energy_burned',
+      'flights_climbed', 'apple_exercise_time', 'apple_stand_time',
+    ]);
+
     const seen = new Map();
     for (const r of rows) {
-      seen.set(`${r.date}|${r.metric_name}`, r);
+      const key = `${r.date}|${r.metric_name}`;
+      if (SUM_METRICS.has(r.metric_name)) {
+        // 累加型：把同一天的值加起来
+        if (seen.has(key)) {
+          const existing = seen.get(key);
+          existing.value = (parseFloat(existing.value) || 0) + (parseFloat(r.value) || 0);
+        } else {
+          seen.set(key, { ...r, value: parseFloat(r.value) || 0 });
+        }
+      } else {
+        // 非累加型（睡眠、心率、步长等）：保留最后一条
+        seen.set(key, r);
+      }
     }
     const deduped = [...seen.values()];
 
