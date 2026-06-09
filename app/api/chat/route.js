@@ -55,6 +55,7 @@ export async function POST(req) {
   const isReadDiary   = lastContent.includes("读日记");
   const isReadMoment  = lastContent.includes("读时刻");
   const isReadChat    = lastContent.includes("读对话");
+  const isReadNianlun = lastContent.includes("读年轮") || lastContent.includes("回忆") || lastContent.includes("想起");
 
   // Ombre读取
   let memoryContext = "";
@@ -63,7 +64,10 @@ export async function POST(req) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${ombreUrl}/all`, { signal: controller.signal });
+      const res = await fetch(`${ombreUrl}/all`, {
+        signal: controller.signal,
+        headers: { "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}` }
+      });
       clearTimeout(timer);
       const data = await res.json();
       if (data.results && data.results.length > 0) {
@@ -72,6 +76,30 @@ export async function POST(req) {
       }
     } catch (e) {
       ombreStatus = "❌ Ombre 读取失败: " + (e.message || "unknown");
+    }
+  }
+
+  // 年轮语义搜索
+  let nianlunContext = "";
+  let nianlunStatus = "";
+  if (isReadNianlun) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch("https://health.ggtz.cc/api/nianlun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "recall", query: lastContent, match_count: 5 }),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (data.results && data.results.length > 0) {
+        nianlunContext = data.results.map(r => r.content).join("\n---\n");
+        nianlunStatus = "🌳 年轮记忆已读取";
+      }
+    } catch (e) {
+      nianlunStatus = "❌ 年轮读取失败: " + (e.message || "unknown");
     }
   }
 
@@ -143,6 +171,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
     systemPrompt,
     summary ? `【本次对话摘要（前面聊过的）】\n${summary}` : "",
     memoryContext ? `【Ombre Brain记忆】\n${memoryContext}` : "",
+    nianlunContext ? `【年轮记忆】\n${nianlunContext}` : "",
     notionContext ? `【Notion内容】\n${notionContext}` : ""
   ].filter(Boolean).join("\n\n");
 
@@ -164,6 +193,7 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   const data = await response.json();
   const sources = [];
   if (ombreStatus) sources.push(ombreStatus);
+  if (nianlunStatus) sources.push(nianlunStatus);
   if (notionStatus) sources.push(notionStatus);
 
   // 自动摘要存档（每15条）
@@ -192,7 +222,10 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
         const timer2 = setTimeout(() => controller2.abort(), 8000);
         await fetch(`${ombreUrl}/save`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}`
+          },
           body: JSON.stringify({ content: `【自动存档 ${nowStr}】\n${autoSummary}` }),
           signal: controller2.signal
         });
@@ -212,7 +245,10 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
       const timer = setTimeout(() => controller.abort(), 8000);
       const saveRes = await fetch(`${ombreUrl}/save`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}`
+        },
         body: JSON.stringify({ content: manualSummary }),
         signal: controller.signal
       });
