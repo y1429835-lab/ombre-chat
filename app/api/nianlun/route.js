@@ -53,14 +53,14 @@ export async function OPTIONS() {
 
 export async function POST(request) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !SILICONFLOW_API_KEY) {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !SILICONFLOW_API_KEY) {
       return Response.json({ error: 'Missing config' }, { status: 500 });
     }
 
     const body = await request.json();
     const action = body.action;
 
-    // ===== 存记忆 =====
+    // ===== 存记忆（走 service key 穿过 RLS）=====
     if (action === 'remember') {
       const { kind, content, valence, arousal, importance, status, linked_date, tags, pinned } = body;
       if (!kind || !content) {
@@ -80,13 +80,13 @@ export async function POST(request) {
           tags: tags ?? null,
           pinned: pinned ?? false,
         }]),
-      });
+      }, true);
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       const saved = await res.json();
       return Response.json({ message: 'remembered', id: saved[0]?.id });
     }
 
-    // ===== 搜记忆 =====
+    // ===== 搜记忆（走 service key 穿过 RLS）=====
     if (action === 'recall') {
       const { query, match_count, kind } = body;
       const embedding = await getEmbedding(query || '');
@@ -98,7 +98,7 @@ export async function POST(request) {
           match_count: match_count ?? 10,
           filter_kind: kind ?? null,
         }),
-      });
+      }, true);
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       const results = await res.json();
       return Response.json({ message: 'recalled', results });
@@ -108,7 +108,7 @@ export async function POST(request) {
     if (action === 'feel') {
       const { content, context, valence, arousal, memory_id } = body;
       if (!content) return Response.json({ error: 'content required' }, { status: 400 });
-    const res = await sb('nianlun_feelings', {
+      const res = await sb('nianlun_feelings', {
         method: 'POST',
         headers: { 'Prefer': 'return=representation' },
         body: JSON.stringify([{
@@ -120,10 +120,11 @@ export async function POST(request) {
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       return Response.json({ message: 'felt' });
     }
-// ===== 批量补embedding =====
+
+    // ===== 批量补embedding（走 service key 穿过 RLS）=====
     if (action === 'backfill') {
       // 取出所有还没有embedding的记忆
-      const res = await sb('nianlun_memory?embedding=is.null&select=id,content');
+      const res = await sb('nianlun_memory?embedding=is.null&select=id,content', {}, true);
       if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
       const rows = await res.json();
       let done = 0;
@@ -134,7 +135,7 @@ export async function POST(request) {
           const up = await sb(`nianlun_memory?id=eq.${row.id}`, {
             method: 'PATCH',
             body: JSON.stringify({ embedding }),
-          });
+          }, true);
           if (up.ok) done++;
           else errors.push(`id ${row.id}: ${await up.text()}`);
         } catch (e) {
@@ -143,6 +144,7 @@ export async function POST(request) {
       }
       return Response.json({ message: 'backfill done', total: rows.length, done, errors });
     }
+
     return Response.json({ error: 'unknown action' }, { status: 400 });
 
   } catch (e) {
