@@ -35,8 +35,73 @@ async function fetchPageText(pageId, token, maxChars = 2000) {
   return text.slice(0, maxChars);
 }
 
+// ====== Ombre Brain MCP 调用 ======
+async function callOmbre(toolName, args, timeoutMs = 8000) {
+  const url = process.env.OMBRE_URL;
+  if (!url) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream"
+    };
+    if (process.env.OMBRE_TOKEN) {
+      headers["Authorization"] = `Bearer ${process.env.OMBRE_TOKEN}`;
+    }
+
+    const res = await fetch(`${url}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: toolName, arguments: args }
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) return null;
+
+    const ct = res.headers.get("content-type") || "";
+    let result = null;
+
+    if (ct.includes("text/event-stream")) {
+      // SSE 格式：逐行找 data: 开头的 JSON
+      const raw = await res.text();
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("data:")) {
+          try {
+            const d = JSON.parse(line.slice(5).trim());
+            if (d.result) { result = d.result; break; }
+          } catch {}
+        }
+      }
+    } else {
+      // 直接 JSON
+      const d = await res.json();
+      result = d.result;
+    }
+
+    if (!result?.content) return null;
+
+    // MCP content 是 [{type:"text", text:"..."}] 数组
+    return result.content
+      .filter(c => c.type === "text")
+      .map(c => c.text)
+      .join("\n");
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
 export async function POST(req) {
-  const { messages, ombreUrl, summary, isSummaryRequest, clientTime } = await req.json();
+  const { messages, summary, isSummaryRequest, clientTime } = await req.json();
 
   if (isSummaryRequest) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -57,22 +122,17 @@ export async function POST(req) {
   const isReadChat    = lastContent.includes("读对话");
   const isReadNianlun = lastContent.includes("读年轮") || lastContent.includes("回忆") || lastContent.includes("想起");
 
-  // Ombre读取
+  // ====== Ombre Brain 读取（MCP breath）======
   let memoryContext = "";
   let ombreStatus = "";
-  if (ombreUrl && isReadOmbre) {
+  if (isReadOmbre) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${ombreUrl}/all`, {
-        signal: controller.signal,
-        headers: { "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}` }
-      });
-      clearTimeout(timer);
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        memoryContext = data.results.slice(0, 5).join("\n---\n");
+      const text = await callOmbre("breath", { query: lastContent, max_results: 10 });
+      if (text) {
+        memoryContext = text;
         ombreStatus = "✅ Ombre Brain 已读取";
+      } else {
+        ombreStatus = "❌ Ombre 读取失败（无返回）";
       }
     } catch (e) {
       ombreStatus = "❌ Ombre 读取失败: " + (e.message || "unknown");
@@ -196,8 +256,8 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   if (nianlunStatus) sources.push(nianlunStatus);
   if (notionStatus) sources.push(notionStatus);
 
-  // 自动摘要存档（每15条）
-  if (ombreUrl && messages.length > 0 && messages.length % 15 === 0) {
+  // ====== 自动摘要存档（每15条，MCP grow）======
+  if (process.env.OMBRE_URL && messages.length > 0 && messages.length % 15 === 0) {
     try {
       const summaryRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -218,43 +278,20 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
       const summaryData = await summaryRes.json();
       const autoSummary = summaryData.content?.[0]?.text || "";
       if (autoSummary) {
-        const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 8000);
-        await fetch(`${ombreUrl}/save`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}`
-          },
-          body: JSON.stringify({ content: `【自动存档 ${nowStr}】\n${autoSummary}` }),
-          signal: controller2.signal
-        });
-        clearTimeout(timer2);
-        sources.push("📝 自动存档完成");
+        const saved = await callOmbre("grow", { content: `【自动存档 ${nowStr}】\n${autoSummary}` });
+        if (saved) sources.push("📝 自动存档完成");
       }
     } catch {}
   }
 
-  // 手动存档
-  if (isSaveCommand && ombreUrl) {
+  // ====== 手动存档（MCP grow）======
+  if (isSaveCommand && process.env.OMBRE_URL) {
     try {
       const manualSummary = messages.slice(-10)
         .map(m => `${m.role === "user" ? "taozhi" : "gege"}：${m.content}`)
         .join("\n");
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      const saveRes = await fetch(`${ombreUrl}/save`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.OMBRE_TOKEN || ""}`
-        },
-        body: JSON.stringify({ content: manualSummary }),
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-      const saveData = await saveRes.json();
-      sources.push(saveData.ok ? "✅ 已存入记忆" : "❌ 存入失败");
+      const saved = await callOmbre("grow", { content: manualSummary });
+      sources.push(saved ? "✅ 已存入记忆" : "❌ 存入失败");
     } catch (e) {
       sources.push("❌ 存入失败: " + (e.message || "unknown"));
     }
