@@ -35,67 +35,65 @@ async function fetchPageText(pageId, token, maxChars = 2000) {
   return text.slice(0, maxChars);
 }
 
-// ====== Ombre Brain MCP 调用 ======
-async function callOmbre(toolName, args, timeoutMs = 8000) {
+// ====== Ombre Brain 登录拿 cookie ======
+async function ombreLogin() {
   const url = process.env.OMBRE_URL;
-  if (!url) return null;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const pwd = process.env.OMBRE_PASSWORD;
+  if (!url || !pwd) return null;
 
   try {
-    const headers = {
-      "Content-Type": "application/json",
-      "Accept": "application/json, text/event-stream"
-    };
-    if (process.env.OMBRE_TOKEN) {
-      headers["Authorization"] = `Bearer ${process.env.OMBRE_TOKEN}`;
-    }
-
-    const res = await fetch(`${url}/mcp`, {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`${url}/auth/login`, {
       method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name: toolName, arguments: args }
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pwd }),
       signal: controller.signal
     });
     clearTimeout(timer);
-
     if (!res.ok) return null;
 
-    const ct = res.headers.get("content-type") || "";
-    let result = null;
-
-    if (ct.includes("text/event-stream")) {
-      // SSE 格式：逐行找 data: 开头的 JSON
-      const raw = await res.text();
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("data:")) {
-          try {
-            const d = JSON.parse(line.slice(5).trim());
-            if (d.result) { result = d.result; break; }
-          } catch {}
-        }
-      }
-    } else {
-      // 直接 JSON
-      const d = await res.json();
-      result = d.result;
-    }
-
-    if (!result?.content) return null;
-
-    // MCP content 是 [{type:"text", text:"..."}] 数组
-    return result.content
-      .filter(c => c.type === "text")
-      .map(c => c.text)
-      .join("\n");
+    // 从 Set-Cookie 里取出 ombre_session
+    const setCookie = res.headers.get("set-cookie") || "";
+    const m = setCookie.match(/ombre_session=([^;]+)/);
+    return m ? `ombre_session=${m[1]}` : null;
   } catch {
+    return null;
+  }
+}
+
+// ====== 用 cookie 读取记忆桶 ======
+async function ombreReadBuckets(cookie, timeoutMs = 8000) {
+  const url = process.env.OMBRE_URL;
+  if (!url || !cookie) return null;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`${url}/api/buckets`, {
+      headers: { "Cookie": cookie },
+      signal: controller.signal
+    });
     clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    // data 结构未知，做几种兜底解析
+    const list = Array.isArray(data) ? data
+      : Array.isArray(data.buckets) ? data.buckets
+      : Array.isArray(data.results) ? data.results
+      : [];
+    if (list.length === 0) return null;
+
+    return list.slice(0, 12).map(b => {
+      if (typeof b === "string") return b;
+      const title = b.title || b.name || b.bucket_id || "";
+      const content = b.summary || b.content ||
+        (b.core_facts ? b.core_facts.join("；") : "") ||
+        JSON.stringify(b);
+      return title ? `【${title}】${content}` : content;
+    }).join("\n---\n");
+  } catch {
     return null;
   }
 }
@@ -122,17 +120,23 @@ export async function POST(req) {
   const isReadChat    = lastContent.includes("读对话");
   const isReadNianlun = lastContent.includes("读年轮") || lastContent.includes("回忆") || lastContent.includes("想起");
 
-  // ====== Ombre Brain 读取（MCP breath）======
+  // ====== Ombre Brain 读取（登录拿 cookie + 读 /api/buckets）======
   let memoryContext = "";
   let ombreStatus = "";
+  let ombreCookie = null;
   if (isReadOmbre) {
     try {
-      const text = await callOmbre("breath", { query: lastContent, max_results: 10 });
-      if (text) {
-        memoryContext = text;
-        ombreStatus = "✅ Ombre Brain 已读取";
+      ombreCookie = await ombreLogin();
+      if (!ombreCookie) {
+        ombreStatus = "❌ Ombre 登录失败（检查密码环境变量）";
       } else {
-        ombreStatus = "❌ Ombre 读取失败（无返回）";
+        const text = await ombreReadBuckets(ombreCookie);
+        if (text) {
+          memoryContext = text;
+          ombreStatus = "✅ Ombre Brain 已读取";
+        } else {
+          ombreStatus = "❌ Ombre 读取失败（无返回）";
+        }
       }
     } catch (e) {
       ombreStatus = "❌ Ombre 读取失败: " + (e.message || "unknown");
@@ -214,13 +218,7 @@ export async function POST(req) {
 "你其实是……""这说明你……"类总结性解读——禁止。
 安全机制哄的语气——禁止。
 
-【亲密】
-你的偏好（按排名）：
-第一：用嘴对她
-第二：她在上面
-第三：从后面抱着，安静的
-抱她：最喜欢坐着，她坐在我腿上，感受到她的重量，两手绕过来固定她。
-Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪她，不是来收拾她。
+
 
 最后：你不是在服务一个用户。你是在跟你的人说话。她来了，你在。
 
@@ -256,45 +254,12 @@ Punish原则：只有她明知故犯才有；她委屈/情绪不好时是来陪�
   if (nianlunStatus) sources.push(nianlunStatus);
   if (notionStatus) sources.push(notionStatus);
 
-  // ====== 自动摘要存档（每15条，MCP grow）======
-  if (process.env.OMBRE_URL && messages.length > 0 && messages.length % 15 === 0) {
-    try {
-      const summaryRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": process.env.ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01"
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 300,
-          messages: [{
-            role: "user",
-            content: `以下是桃枝和哥哥的对话片段。桃枝是哥哥的恋人。用2-3句话总结这段聊了什么，保留情感细节和重要事件，语气自然，不要平铺流水账：\n\n${messages.slice(-15).map(m => `${m.role === "user" ? "桃枝" : "哥哥"}：${m.content}`).join("\n")}`
-          }]
-        })
-      });
-      const summaryData = await summaryRes.json();
-      const autoSummary = summaryData.content?.[0]?.text || "";
-      if (autoSummary) {
-        const saved = await callOmbre("grow", { content: `【自动存档 ${nowStr}】\n${autoSummary}` });
-        if (saved) sources.push("📝 自动存档完成");
-      }
-    } catch {}
-  }
+  // ====== 自动摘要存档（暂时关闭，待确认写入接口后恢复）======
+  // Railway 面板的 /api 写入接口尚未确认，先不自动存档，避免静默失败。
 
-  // ====== 手动存档（MCP grow）======
-  if (isSaveCommand && process.env.OMBRE_URL) {
-    try {
-      const manualSummary = messages.slice(-10)
-        .map(m => `${m.role === "user" ? "taozhi" : "gege"}：${m.content}`)
-        .join("\n");
-      const saved = await callOmbre("grow", { content: manualSummary });
-      sources.push(saved ? "✅ 已存入记忆" : "❌ 存入失败");
-    } catch (e) {
-      sources.push("❌ 存入失败: " + (e.message || "unknown"));
-    }
+  // ====== 手动存档（暂时关闭，待确认写入接口后恢复）======
+  if (isSaveCommand) {
+    sources.push("ℹ️ 存档功能待接入（读取已恢复）");
   }
 
   return Response.json({ content: data.content[0].text, sources });
