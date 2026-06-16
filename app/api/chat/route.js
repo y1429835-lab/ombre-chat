@@ -159,7 +159,10 @@ export async function POST(req) {
       const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetch("https://health.ggtz.cc/api/nianlun", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.MEMORY_SECRET ? { "x-memory-key": process.env.MEMORY_SECRET } : {}),
+        },
         body: JSON.stringify({ action: "recall", query: lastContent, match_count: 5 }),
         signal: controller.signal
       });

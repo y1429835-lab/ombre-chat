@@ -8,11 +8,15 @@ const NIANLUN_API = process.env.NIANLUN_API || "https://health.ggtz.cc/api/nianl
 // ombre（可选：在 Vercel 环境变量里设 OMBRE_URL / OMBRE_TOKEN 即可启用）
 const OMBRE_URL = process.env.OMBRE_URL || "";
 const OMBRE_TOKEN = process.env.OMBRE_TOKEN || "";
+// 记忆暗号：设了就给这个 MCP 端点上锁，且转发给年轮接口时带上
+const MEMORY_SECRET = process.env.MEMORY_SECRET || "";
 
 async function nianlun(body) {
+  const headers = { "Content-Type": "application/json" };
+  if (MEMORY_SECRET) headers["x-memory-key"] = MEMORY_SECRET;
   const res = await fetch(NIANLUN_API, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   return res.json();
@@ -139,4 +143,24 @@ const handler = createMcpHandler(
   { basePath: "/api/mcp-server" }
 );
 
-export { handler as GET, handler as POST, handler as DELETE };
+// 给整个 MCP 端点上一道门：设了 MEMORY_SECRET 就要求连接器带对暗号才放行
+function gate(h) {
+  return async (req, ctx) => {
+    if (MEMORY_SECRET) {
+      const auth = req.headers.get("authorization") || "";
+      const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (bearer !== MEMORY_SECRET) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    return h(req, ctx);
+  };
+}
+
+const GET = gate(handler);
+const POST = gate(handler);
+const DELETE = gate(handler);
+export { GET, POST, DELETE };

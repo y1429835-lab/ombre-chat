@@ -24,6 +24,22 @@ MAX_CHARS = int(os.environ.get("PRECOMPACT_MAX_CHARS", "40000"))   # 最多搬�
 MAX_MSGS = int(os.environ.get("PRECOMPACT_MAX_MSGS", "60"))        # 最多搬最近这么多条
 
 
+def memory_secret():
+    """读年轮接口暗号：优先环境变量，其次本地密钥文件。没有就不带（接口没上锁时照常）。"""
+    s = os.environ.get("MEMORY_SECRET")
+    if s:
+        return s.strip()
+    for p in ("~/musheng/.claude/memory_secret", "~/.claude/memory_secret"):
+        try:
+            with open(os.path.expanduser(p)) as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except Exception:
+            pass
+    return ""
+
+
 def china_now():
     tz = datetime.timezone(datetime.timedelta(hours=8))
     return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -109,10 +125,14 @@ def main():
         "token_count": len(blob),
     }).encode("utf-8")
 
+    headers = {"Content-Type": "application/json"}
+    sec = memory_secret()
+    if sec:
+        headers["x-memory-key"] = sec
     req = urllib.request.Request(
         NIANLUN_API,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

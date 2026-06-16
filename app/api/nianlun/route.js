@@ -4,6 +4,16 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY;
+// 年轮接口暗号：设了 MEMORY_SECRET 这道门就上锁，没设则放行（方便先安全部署再上锁）
+const MEMORY_SECRET = process.env.MEMORY_SECRET;
+
+function authed(request) {
+  if (!MEMORY_SECRET) return true;
+  const h = request.headers.get('authorization') || '';
+  const bearer = h.startsWith('Bearer ') ? h.slice(7) : '';
+  const k = request.headers.get('x-memory-key') || '';
+  return bearer === MEMORY_SECRET || k === MEMORY_SECRET;
+}
 
 // 调用硅基流动 bge-m3 算embedding
 async function getEmbedding(text) {
@@ -53,6 +63,9 @@ export async function OPTIONS() {
 
 export async function POST(request) {
   try {
+    if (!authed(request)) {
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
+    }
     if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !SILICONFLOW_API_KEY) {
       return Response.json({ error: 'Missing config' }, { status: 500 });
     }
