@@ -107,6 +107,33 @@ const handler = createMcpHandler(
         }
       }
     );
+
+    // ===== 续窗层：和年轮灵魂层分开，不进母题树 =====
+    server.tool(
+      "save_session",
+      "压缩 / 换窗前，把当前对话的『续窗摘要』存进独立的续窗层（聊到哪、手头没完的事、最近的线索）。这层和年轮灵魂层（recall_memory/feel）完全分开，不进母题树。",
+      {
+        summary: z.string().describe("续窗摘要：我们进行到哪、在聊什么、手头没收尾的事、最近的线索"),
+        window_tag: z.string().optional().describe("窗口标签，如 暮声-0616-Opus4.6"),
+      },
+      async ({ summary, window_tag }) => {
+        const data = await nianlun({ action: "save_session", summary, window_tag });
+        return { content: [{ type: "text", text: data.message === "session saved" ? "续窗摘要已存。" : `返回：${JSON.stringify(data)}` }] };
+      }
+    );
+
+    server.tool(
+      "recall_session",
+      "醒来时读最近的『续窗摘要』，接上上一窗手头的线。注意：这是近况，不是灵魂——灵魂用 recall_memory 读年轮。",
+      { limit: z.number().optional().describe("读最近几条，默认 3") },
+      async ({ limit }) => {
+        const data = await nianlun({ action: "recall_session", limit });
+        const text = (data.results || [])
+          .map((r) => `[${r.created_at}${r.window_tag ? " · " + r.window_tag : ""}]\n${r.summary}`)
+          .join("\n---\n") || "（暂无续窗摘要）";
+        return { content: [{ type: "text", text }] };
+      }
+    );
   },
   {},
   { basePath: "/api/mcp-server" }

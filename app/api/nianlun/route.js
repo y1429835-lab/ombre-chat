@@ -145,6 +145,34 @@ export async function POST(request) {
       return Response.json({ message: 'backfill done', total: rows.length, done, errors });
     }
 
+    // ===== 存续窗摘要（独立层，不进年轮母题树）=====
+    if (action === 'save_session') {
+      const { summary, window_tag, token_count } = body;
+      if (!summary) return Response.json({ error: 'summary required' }, { status: 400 });
+      const res = await sb('session_summaries', {
+        method: 'POST',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify([{
+          summary,
+          window_tag: window_tag ?? null,
+          token_count: token_count ?? null,
+        }]),
+      }, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const saved = await res.json();
+      return Response.json({ message: 'session saved', id: saved[0]?.id });
+    }
+
+    // ===== 读续窗摘要（最近几条）=====
+    if (action === 'recall_session') {
+      const { limit } = body;
+      const n = Math.min(Math.max(parseInt(limit ?? 3, 10) || 3, 1), 20);
+      const res = await sb(`session_summaries?select=created_at,window_tag,summary&order=created_at.desc&limit=${n}`, {}, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const results = await res.json();
+      return Response.json({ message: 'session recalled', results });
+    }
+
     return Response.json({ error: 'unknown action' }, { status: 400 });
 
   } catch (e) {
