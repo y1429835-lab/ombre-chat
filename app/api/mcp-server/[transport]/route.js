@@ -39,14 +39,14 @@ const handler = createMcpHandler(
     // ===== 年轮：存记忆 =====
     server.tool(
       "remember",
-      "把一件重要的事存进年轮记忆，以后能回忆起来。",
+      "把一件重要的事存进年轮记忆，以后能回忆起来。kind 只能是 anchor/diary/treasure/message：anchor=要钉住的灵魂锚点，treasure=珍贵的记忆（默认），diary=日记式记录，message=留言。",
       {
         content: z.string().describe("要记住的内容"),
-        kind: z.string().optional().describe("类型，如 event/fact/promise，默认 event"),
+        kind: z.enum(["anchor", "diary", "treasure", "message"]).optional().describe("类型，默认 treasure"),
         importance: z.number().optional().describe("重要程度 1-10，默认 5"),
       },
       async ({ content, kind, importance }) => {
-        const data = await nianlun({ action: "remember", kind: kind ?? "event", content, importance });
+        const data = await nianlun({ action: "remember", kind: kind ?? "treasure", content, importance });
         const ok = data.message === "remembered";
         return { content: [{ type: "text", text: ok ? "已记住。" : `存储返回：${JSON.stringify(data)}` }] };
       }

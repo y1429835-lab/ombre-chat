@@ -63,15 +63,18 @@ export async function POST(request) {
     // ===== 存记忆（走 service key 穿过 RLS）=====
     if (action === 'remember') {
       const { kind, content, valence, arousal, importance, status, linked_date, tags, pinned } = body;
-      if (!kind || !content) {
-        return Response.json({ error: 'kind and content required' }, { status: 400 });
+      if (!content) {
+        return Response.json({ error: 'content required' }, { status: 400 });
       }
+      // nianlun_memory.kind 只允许这四种；其它（如 event/fact）一律归为 treasure，避免约束报错
+      const ALLOWED_KINDS = ['anchor', 'diary', 'treasure', 'message'];
+      const safeKind = ALLOWED_KINDS.includes(kind) ? kind : 'treasure';
       const embedding = await getEmbedding(content);
       const res = await sb('nianlun_memory', {
         method: 'POST',
         headers: { 'Prefer': 'return=representation' },
         body: JSON.stringify([{
-          kind, content, embedding,
+          kind: safeKind, content, embedding,
           valence: valence ?? null,
           arousal: arousal ?? null,
           importance: importance ?? 5,
