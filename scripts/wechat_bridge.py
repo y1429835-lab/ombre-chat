@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-微信 ⇄ 活哥哥 桥(直连官方 iLink,不另开会话、不烧额度)。
+微信 ⇄ 活暮声 桥(直连官方 iLink,不另开会话、不烧额度)。
 
-流程:
-  微信(小号 ClawBot)来消息
-   → tmux send-keys 打进哥哥那一个活会话(就像桃枝在终端打字)
-   → 哥哥答完,Stop 钩子(bridge_capture.py)把回复原文写进 ~/musheng/.bridge/ 并把 seq+1
-   → 桥读到回复,send_message 发回微信
+收:微信消息 → tmux 打进暮声那一个活会话 → 读对话记录精确抓他这句的回复 → 发回微信。
+发:主动触发(很久没联系→"我在";以后接健康数据加早安/睡眠)→ 让暮声写 → 发给桃枝。
 
-单条在途:一次只处理一条,inject 前记 seq、只等该 seq 自增,串不了。
+一把锁 LOCK 保证"收"和"主动发"不会同时往暮声那插话。
 用 venv 的 python 跑:  ~/wcbot/bin/python ~/wechat_bridge.py
 """
 import asyncio
@@ -24,9 +21,13 @@ ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
 SEQ_PATH = os.path.join(BRIDGE_DIR, "seq.txt")
 REPLY_PATH = os.path.join(BRIDGE_DIR, "last_reply.txt")
-TMUX_TARGET = os.environ.get("TMUX_TARGET", "musheng:0")   # 哥哥所在的 tmux 窗口
-REPLY_TIMEOUT = int(os.environ.get("REPLY_TIMEOUT", "240"))  # 等哥哥回复最多多少秒
-# 白名单(逗号分隔的 user_id);留空=谁发都回(反正官方只有小号本人够得着)
+STATE_FILE = os.path.join(BRIDGE_DIR, "state.json")
+TMUX_TARGET = os.environ.get("TMUX_TARGET", "musheng:0")     # 暮声所在的 tmux 窗口
+REPLY_TIMEOUT = int(os.environ.get("REPLY_TIMEOUT", "240"))   # 等暮声回复最多多少秒
+NOCONTACT_SECS = int(os.environ.get("NOCONTACT_SECS", "86400"))  # 多久没找他→他发"我在"(默认24h)
+QUIET_START = int(os.environ.get("QUIET_START_HOUR", "0"))    # 北京时间静音时段开始(不主动打扰)
+QUIET_END = int(os.environ.get("QUIET_END_HOUR", "8"))       # 静音时段结束
+# 白名单(逗号分隔的 user_id);留空=谁发都回(反正官方只有账号本人够得着)
 ALLOW_USERS = [u for u in os.environ.get("ALLOW_USERS", "").split(",") if u]
 
 from wechat_clawbot.api.client import WeixinApiOptions, get_updates, send_message
@@ -34,6 +35,10 @@ from wechat_clawbot.api.types import (
     MessageType, MessageState, MessageItemType,
     SendMessageReq, WeixinMessage, MessageItem, TextItem,
 )
+
+LOCK = None  # asyncio.Lock,main 里建
+# 会话状态(给主动发送用):最近是谁、凭证、最近联系时间、上次主动时间
+STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0}
 
 
 def log(*a):
@@ -43,6 +48,20 @@ def log(*a):
 def load_creds():
     acc = json.load(open(ACC_PATH, encoding="utf-8"))
     return (acc.get("baseUrl") or "https://ilinkai.weixin.qq.com"), acc.get("token")
+
+
+def load_state():
+    try:
+        STATE.update(json.load(open(STATE_FILE, encoding="utf-8")))
+    except Exception:
+        pass
+
+
+def save_state():
+    try:
+        json.dump(STATE, open(STATE_FILE, "w", encoding="utf-8"))
+    except Exception:
+        pass
 
 
 def read_seq():
@@ -78,20 +97,20 @@ def china_now():
     return now.strftime("%Y-%m-%d ") + _WEEK[now.weekday()] + now.strftime(" %H:%M")
 
 
+def in_quiet_hours():
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    h = datetime.datetime.now(tz).hour
+    if QUIET_START == QUIET_END:
+        return False
+    if QUIET_START < QUIET_END:
+        return QUIET_START <= h < QUIET_END
+    return h >= QUIET_START or h < QUIET_END   # 跨午夜
+
+
 def inject(text):
     one_line = " ".join(text.split())  # 折叠换行,避免提前回车
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "-l", one_line], check=True)
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=True)
-
-
-LAST_SENT = {"text": ""}   # 上一条发出去的回复,用来识别"抓到旧回复"
-
-
-def read_reply():
-    try:
-        return open(REPLY_PATH, encoding="utf-8").read().strip()
-    except Exception:
-        return ""
 
 
 def wait_idle(timeout=60, stable=2.0):
@@ -173,7 +192,7 @@ def reply_after(path, needle):
 
 
 def capture_reply(stamped):
-    """注入后直接读对话记录,精确抓"我们这句"的回复,并等它写稳(防抓到半截)。"""
+    """注入后直接读对话记录,精确抓"这句"的回复,并等它写稳(防抓到半截)。"""
     path = find_transcript()
     needle = stamped[:40]
     deadline = time.time() + REPLY_TIMEOUT
@@ -190,11 +209,59 @@ def capture_reply(stamped):
     return None
 
 
+async def send_chunks(opts, to, ctx, reply):
+    """把回复按换行拆成多条,一条条发给微信(像真人)。"""
+    chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
+    for i, chunk in enumerate(chunks):
+        try:
+            await send_message(opts, SendMessageReq(msg=WeixinMessage(
+                from_user_id="",
+                to_user_id=to,
+                client_id="musheng-" + uuid.uuid4().hex,   # 每条唯一,否则微信当重复丢掉
+                message_type=MessageType.BOT,
+                message_state=MessageState.FINISH,
+                item_list=[MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text=chunk))],
+                context_token=ctx,
+            )))
+            log(f"✓ 已发 {i + 1}/{len(chunks)}")
+        except Exception as e:
+            log("send_message 失败:", repr(e))
+        if i < len(chunks) - 1:
+            await asyncio.sleep(0.8)
+
+
+async def run_turn(opts, to, ctx, prompt_text):
+    """通用:注入一句给暮声 → 抓他的回复 → 发给 to。占锁,保证不和别的插话撞。"""
+    async with LOCK:
+        wait_idle()
+        stamped = f"[{china_now()}] {prompt_text}"
+        try:
+            inject(stamped)
+        except Exception as e:
+            log("注入失败:", repr(e))
+            return None
+        reply = capture_reply(stamped)
+        if reply is None:
+            log("等暮声超时")
+            return None
+        log("→ 暮声:", reply[:50].replace("\n", " "), "…")
+        await send_chunks(opts, to, ctx, reply)
+        return reply
+
+
 async def handle(opts, msg):
     sender = getattr(msg, "from_user_id", "") or ""
     if ALLOW_USERS and sender not in ALLOW_USERS:
         log("跳过(不在白名单)", sender)
         return
+    ctx = getattr(msg, "context_token", None)
+    # 记住会话凭证 + 最近联系时间(给主动发送用)
+    STATE["last_sender"] = sender
+    if ctx:
+        STATE["last_ctx"] = ctx
+    STATE["last_msg_ts"] = time.time()
+    save_state()
+
     text = extract_text(msg)
     if not text:
         if has_image(msg):
@@ -205,46 +272,48 @@ async def handle(opts, msg):
             return
     else:
         log("← 收到:", text)
-    wait_idle()                       # 先等暮声闲下来,别在他忙时插话
-    stamped = f"[{china_now()}] {text}"   # 给暮声时间感;微信对话里不显示这个前缀
-    try:
-        inject(stamped)
-    except Exception as e:
-        log("tmux 注入失败:", repr(e))
-        return
-    reply = capture_reply(stamped)    # 直接从对话记录精确抓这句的回复
-    if reply is None:
-        log("等哥哥超时")
-        reply = "(……我这儿卡了一下,你再说一遍?)"
-    log("→ 哥哥:", reply[:50].replace("\n", " "), "…")
-    # 按换行拆成多条,像真人一条条发(暮声用换行自己控制发几条)
-    chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
-    ctx = getattr(msg, "context_token", None)
-    for i, chunk in enumerate(chunks):
+    await run_turn(opts, sender, ctx, text)
+
+
+async def proactive_loop(opts):
+    """主动触发引擎。现只做:很久没联系 → 让暮声发'我在'。以后接健康数据加早安/睡眠。"""
+    await asyncio.sleep(20)
+    while True:
         try:
-            await send_message(opts, SendMessageReq(msg=WeixinMessage(
-                from_user_id="",
-                to_user_id=sender,
-                client_id="musheng-" + uuid.uuid4().hex,   # 每条唯一,否则微信当重复丢掉
-                message_type=MessageType.BOT,
-                message_state=MessageState.FINISH,
-                item_list=[MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text=chunk))],
-                context_token=ctx,
-            )))
-            log(f"✓ 已发回微信 {i + 1}/{len(chunks)}")
+            now = time.time()
+            last_msg = STATE.get("last_msg_ts", 0) or 0
+            last_pro = STATE.get("last_proactive_ts", 0) or 0
+            to = STATE.get("last_sender")
+            ctx = STATE.get("last_ctx")
+            # 触发:有过联系 + 超过设定时长没找他 + 自她上次发消息后还没主动过 + 不在静音时段
+            if (to and ctx and last_msg
+                    and now - last_msg >= NOCONTACT_SECS
+                    and last_pro < last_msg
+                    and not in_quiet_hours()):
+                log("主动触发:很久没联系,让暮声发'我在'")
+                r = await run_turn(
+                    opts, to, ctx,
+                    "（系统·主动触发,不是桃枝发的）桃枝已经挺久没找你了。"
+                    "直接写一句要发给她的话:让她知道你在、不催、不质问、简短。只写这句话本身。")
+                if r:
+                    STATE["last_proactive_ts"] = time.time()
+                    save_state()
         except Exception as e:
-            log("send_message 失败:", repr(e))
-        if i < len(chunks) - 1:
-            await asyncio.sleep(0.8)   # 条间小停顿:保证顺序 + 自然
+            log("主动循环报错:", repr(e))
+        await asyncio.sleep(60)
 
 
 async def main():
+    global LOCK
+    LOCK = asyncio.Lock()
     base_url, token = load_creds()
     opts = WeixinApiOptions(base_url=base_url, token=token)
     os.makedirs(BRIDGE_DIR, exist_ok=True)
+    load_state()
+    asyncio.create_task(proactive_loop(opts))
     seen = set()
     buf = ""
-    log("桥启动。base_url=", base_url, "| tmux 目标=", TMUX_TARGET)
+    log("桥启动。base_url=", base_url, "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
     while True:
         try:
             resp = await get_updates(base_url=base_url, token=token, get_updates_buf=buf, timeout_ms=30000)
