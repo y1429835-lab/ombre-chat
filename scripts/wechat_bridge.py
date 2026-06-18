@@ -265,6 +265,11 @@ async def handle(opts, msg):
     text = extract_text(msg)
     if not text:
         if has_image(msg):
+            # 临时探针:把图片项结构打进日志,好实现下载(实现后删掉)
+            for it in (getattr(msg, "item_list", None) or []):
+                ii = getattr(it, "image_item", None)
+                if ii:
+                    log("IMAGE_ITEM:", repr(ii)[:800])
             text = "（桃枝刚发来一张图片,但这条通道现在还接不进图——你先回应一下:告诉她你这边暂时看不到图,让她说说图里是什么。）"
             log("← 收到一张图片(暂不支持看图)")
         else:
