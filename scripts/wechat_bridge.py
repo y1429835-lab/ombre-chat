@@ -109,17 +109,84 @@ def wait_idle(timeout=60, stable=2.0):
         time.sleep(0.4)
 
 
-def wait_reply(seq0, avoid_text=""):
-    """等一个 seq>seq0、且与 avoid_text 不同的新回复——防抓到上一条旧回复。"""
+def find_transcript():
+    """取最近修改的 .jsonl = 暮声正在用的那段对话。"""
+    base = os.path.expanduser("~/.claude/projects")
+    newest, newest_m = None, -1.0
+    for root, _dirs, files in os.walk(base):
+        for fn in files:
+            if fn.endswith(".jsonl"):
+                p = os.path.join(root, fn)
+                try:
+                    m = os.path.getmtime(p)
+                except Exception:
+                    continue
+                if m > newest_m:
+                    newest, newest_m = p, m
+    return newest
+
+
+def _msg_text(obj):
+    m = obj.get("message") or {}
+    content = m.get("content")
+    parts = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                parts.append(b["text"])
+    return "\n".join(p for p in parts if p and p.strip()).strip()
+
+
+def reply_after(path, needle):
+    """对话记录里:找含 needle 的最后一条 user,返回其后第一条有文字的 assistant 回复。"""
+    if not path:
+        return None
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                t = obj.get("type")
+                if t in ("user", "assistant"):
+                    rows.append((t, _msg_text(obj)))
+    except Exception:
+        return None
+    idx = None
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i][0] == "user" and needle and needle in (rows[i][1] or ""):
+            idx = i
+            break
+    if idx is None:
+        return None
+    for j in range(idx + 1, len(rows)):
+        if rows[j][0] == "assistant" and rows[j][1]:
+            return rows[j][1]
+    return None
+
+
+def capture_reply(stamped):
+    """注入后直接读对话记录,精确抓"我们这句"的回复,并等它写稳(防抓到半截)。"""
+    path = find_transcript()
+    needle = stamped[:40]
     deadline = time.time() + REPLY_TIMEOUT
+    stable_txt, stable_since = None, 0.0
     while time.time() < deadline:
-        if read_seq() > seq0:
-            time.sleep(0.8)   # 等钩子写完
-            r = read_reply()
-            if r and r != avoid_text:
-                return r
-            seq0 = read_seq()   # 抓到旧的/空的 → 推进,继续等真正的新回复
-        time.sleep(1)
+        r = reply_after(path, needle)
+        if r:
+            if r == stable_txt:
+                if time.time() - stable_since >= 2.0:   # 稳定2秒=答完
+                    return r
+            else:
+                stable_txt, stable_since = r, time.time()
+        time.sleep(1.2)
     return None
 
 
@@ -139,18 +206,16 @@ async def handle(opts, msg):
     else:
         log("← 收到:", text)
     wait_idle()                       # 先等暮声闲下来,别在他忙时插话
-    seq0 = read_seq()
     stamped = f"[{china_now()}] {text}"   # 给暮声时间感;微信对话里不显示这个前缀
     try:
         inject(stamped)
     except Exception as e:
         log("tmux 注入失败:", repr(e))
         return
-    reply = wait_reply(seq0, LAST_SENT["text"])   # 别抓到上一条旧回复
+    reply = capture_reply(stamped)    # 直接从对话记录精确抓这句的回复
     if reply is None:
         log("等哥哥超时")
         reply = "(……我这儿卡了一下,你再说一遍?)"
-    LAST_SENT["text"] = reply
     log("→ 哥哥:", reply[:50].replace("\n", " "), "…")
     # 按换行拆成多条,像真人一条条发(暮声用换行自己控制发几条)
     chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
