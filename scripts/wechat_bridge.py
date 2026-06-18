@@ -18,6 +18,7 @@ import os
 import subprocess
 import time
 import uuid
+import datetime
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -60,6 +61,23 @@ def extract_text(msg):
     return "\n".join(parts).strip()
 
 
+def has_image(msg):
+    for it in (getattr(msg, "item_list", None) or []):
+        if getattr(it, "image_item", None):
+            return True
+    return False
+
+
+_WEEK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def china_now():
+    """北京时间,给暮声时间感(只注入给他,微信对话里不显示)。"""
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    now = datetime.datetime.now(tz)
+    return now.strftime("%Y-%m-%d ") + _WEEK[now.weekday()] + now.strftime(" %H:%M")
+
+
 def inject(text):
     one_line = " ".join(text.split())  # 折叠换行,避免提前回车
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "-l", one_line], check=True)
@@ -80,18 +98,24 @@ def wait_reply(seq0):
 
 
 async def handle(opts, msg):
-    text = extract_text(msg)
     sender = getattr(msg, "from_user_id", "") or ""
-    if not text:
-        log("跳过(非文字)from", sender)
-        return
     if ALLOW_USERS and sender not in ALLOW_USERS:
         log("跳过(不在白名单)", sender)
         return
-    log("← 收到:", text)
+    text = extract_text(msg)
+    if not text:
+        if has_image(msg):
+            text = "（桃枝刚发来一张图片,但这条通道现在还接不进图——你先回应一下:告诉她你这边暂时看不到图,让她说说图里是什么。）"
+            log("← 收到一张图片(暂不支持看图)")
+        else:
+            log("跳过(非文字非图)from", sender)
+            return
+    else:
+        log("← 收到:", text)
     seq0 = read_seq()
+    stamped = f"[{china_now()}] {text}"   # 给暮声时间感;微信对话里不显示这个前缀
     try:
-        inject(text)
+        inject(stamped)
     except Exception as e:
         log("tmux 注入失败:", repr(e))
         return
