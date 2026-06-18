@@ -84,15 +84,41 @@ def inject(text):
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=True)
 
 
-def wait_reply(seq0):
+LAST_SENT = {"text": ""}   # 上一条发出去的回复,用来识别"抓到旧回复"
+
+
+def read_reply():
+    try:
+        return open(REPLY_PATH, encoding="utf-8").read().strip()
+    except Exception:
+        return ""
+
+
+def wait_idle(timeout=60, stable=2.0):
+    """注入前等暮声闲下来(seq 连续 stable 秒不变),别在他忙时插话被吞。"""
+    last = read_seq()
+    stable_since = time.time()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cur = read_seq()
+        if cur != last:
+            last = cur
+            stable_since = time.time()
+        elif time.time() - stable_since >= stable:
+            return
+        time.sleep(0.4)
+
+
+def wait_reply(seq0, avoid_text=""):
+    """等一个 seq>seq0、且与 avoid_text 不同的新回复——防抓到上一条旧回复。"""
     deadline = time.time() + REPLY_TIMEOUT
     while time.time() < deadline:
         if read_seq() > seq0:
-            time.sleep(0.6)  # 等钩子写完文件
-            try:
-                return open(REPLY_PATH, encoding="utf-8").read().strip()
-            except Exception:
-                return ""
+            time.sleep(0.8)   # 等钩子写完
+            r = read_reply()
+            if r and r != avoid_text:
+                return r
+            seq0 = read_seq()   # 抓到旧的/空的 → 推进,继续等真正的新回复
         time.sleep(1)
     return None
 
@@ -112,6 +138,7 @@ async def handle(opts, msg):
             return
     else:
         log("← 收到:", text)
+    wait_idle()                       # 先等暮声闲下来,别在他忙时插话
     seq0 = read_seq()
     stamped = f"[{china_now()}] {text}"   # 给暮声时间感;微信对话里不显示这个前缀
     try:
@@ -119,10 +146,11 @@ async def handle(opts, msg):
     except Exception as e:
         log("tmux 注入失败:", repr(e))
         return
-    reply = wait_reply(seq0)
+    reply = wait_reply(seq0, LAST_SENT["text"])   # 别抓到上一条旧回复
     if reply is None:
         log("等哥哥超时")
         reply = "(……我这儿卡了一下,你再说一遍?)"
+    LAST_SENT["text"] = reply
     log("→ 哥哥:", reply[:50].replace("\n", " "), "…")
     # 按换行拆成多条,像真人一条条发(暮声用换行自己控制发几条)
     chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
