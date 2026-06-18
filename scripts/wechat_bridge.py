@@ -124,19 +124,25 @@ async def handle(opts, msg):
         log("等哥哥超时")
         reply = "(……我这儿卡了一下,你再说一遍?)"
     log("→ 哥哥:", reply[:50].replace("\n", " "), "…")
-    try:
-        await send_message(opts, SendMessageReq(msg=WeixinMessage(
-            from_user_id="",
-            to_user_id=sender,
-            client_id="musheng-" + uuid.uuid4().hex,   # 每条唯一,否则微信当重复消息丢掉
-            message_type=MessageType.BOT,
-            message_state=MessageState.FINISH,
-            item_list=[MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text=reply))],
-            context_token=getattr(msg, "context_token", None),
-        )))
-        log("✓ 已发回微信")
-    except Exception as e:
-        log("send_message 失败:", repr(e))
+    # 按换行拆成多条,像真人一条条发(暮声用换行自己控制发几条)
+    chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
+    ctx = getattr(msg, "context_token", None)
+    for i, chunk in enumerate(chunks):
+        try:
+            await send_message(opts, SendMessageReq(msg=WeixinMessage(
+                from_user_id="",
+                to_user_id=sender,
+                client_id="musheng-" + uuid.uuid4().hex,   # 每条唯一,否则微信当重复丢掉
+                message_type=MessageType.BOT,
+                message_state=MessageState.FINISH,
+                item_list=[MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text=chunk))],
+                context_token=ctx,
+            )))
+            log(f"✓ 已发回微信 {i + 1}/{len(chunks)}")
+        except Exception as e:
+            log("send_message 失败:", repr(e))
+        if i < len(chunks) - 1:
+            await asyncio.sleep(0.8)   # 条间小停顿:保证顺序 + 自然
 
 
 async def main():
