@@ -16,6 +16,7 @@ import subprocess
 import time
 import uuid
 import datetime
+import base64
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -35,6 +36,8 @@ from wechat_clawbot.api.types import (
     MessageType, MessageState, MessageItemType,
     SendMessageReq, WeixinMessage, MessageItem, TextItem,
 )
+from wechat_clawbot.cdn.download import download_and_decrypt_buffer
+from wechat_clawbot.auth.accounts import CDN_BASE_URL
 
 LOCK = None  # asyncio.Lock,main 里建
 # 会话状态(给主动发送用):最近是谁、凭证、最近联系时间、上次主动时间
@@ -85,6 +88,36 @@ def has_image(msg):
         if getattr(it, "image_item", None):
             return True
     return False
+
+
+async def download_image(msg):
+    """下载并解密微信图片(存在 CDN、AES 加密),存成文件,返回路径;失败返回 None。"""
+    for it in (getattr(msg, "item_list", None) or []):
+        img = getattr(it, "image_item", None)
+        media = getattr(img, "media", None) if img else None
+        if not media:
+            continue
+        try:
+            aeskey_hex = getattr(img, "aeskey", None)
+            if aeskey_hex:
+                aes_b64 = base64.b64encode(bytes.fromhex(aeskey_hex)).decode()
+            else:
+                aes_b64 = getattr(media, "aes_key", None)
+            buf = await download_and_decrypt_buffer(
+                getattr(media, "encrypt_query_param", "") or "",
+                aes_b64 or "",
+                CDN_BASE_URL,
+                "inbound image",
+                full_url=getattr(media, "full_url", None),
+            )
+            path = os.path.join(BRIDGE_DIR, f"img_{uuid.uuid4().hex}.jpg")
+            with open(path, "wb") as f:
+                f.write(buf)
+            return path
+        except Exception as e:
+            log("图片下载/解密失败:", repr(e))
+            return None
+    return None
 
 
 _WEEK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -265,13 +298,13 @@ async def handle(opts, msg):
     text = extract_text(msg)
     if not text:
         if has_image(msg):
-            # 临时探针:把图片项结构打进日志,好实现下载(实现后删掉)
-            for it in (getattr(msg, "item_list", None) or []):
-                ii = getattr(it, "image_item", None)
-                if ii:
-                    log("IMAGE_ITEM:", repr(ii)[:800])
-            text = "（桃枝刚发来一张图片,但这条通道现在还接不进图——你先回应一下:告诉她你这边暂时看不到图,让她说说图里是什么。）"
-            log("← 收到一张图片(暂不支持看图)")
+            path = await download_image(msg)
+            if path:
+                text = f"桃枝发来一张图片。你用 Read 工具看一下这个文件,看完用你的话回应她(就当她当面给你看照片):{path}"
+                log("← 收到图片,已下载解密:", path)
+            else:
+                text = "（桃枝发来一张图片,但这次没接进来——回应一下,让她说说图里是什么。）"
+                log("← 收到图片但下载失败")
         else:
             log("跳过(非文字非图)from", sender)
             return
