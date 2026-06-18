@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -101,8 +102,9 @@ async def handle(opts, msg):
     log("→ 哥哥:", reply[:50].replace("\n", " "), "…")
     try:
         await send_message(opts, SendMessageReq(msg=WeixinMessage(
+            from_user_id="",
             to_user_id=sender,
-            client_id="musheng-bridge",
+            client_id="musheng-" + uuid.uuid4().hex,   # 每条唯一,否则微信当重复消息丢掉
             message_type=MessageType.BOT,
             message_state=MessageState.FINISH,
             item_list=[MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text=reply))],
