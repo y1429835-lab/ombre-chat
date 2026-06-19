@@ -27,8 +27,10 @@ STATE_FILE = os.path.join(BRIDGE_DIR, "state.json")
 TMUX_TARGET = os.environ.get("TMUX_TARGET", "musheng:0")     # 暮声所在的 tmux 窗口
 REPLY_TIMEOUT = int(os.environ.get("REPLY_TIMEOUT", "240"))   # 等暮声回复最多多少秒
 NOCONTACT_SECS = int(os.environ.get("NOCONTACT_SECS", "86400"))  # 多久没找他→他发"我在"(默认24h)
-QUIET_START = int(os.environ.get("QUIET_START_HOUR", "0"))    # 北京时间静音时段开始(不主动打扰)
+QUIET_START = int(os.environ.get("QUIET_START_HOUR", "0"))    # 北京时间静音时段开始(深夜保险)
 QUIET_END = int(os.environ.get("QUIET_END_HOUR", "8"))       # 静音时段结束
+PRO_DAILY_CAP = int(os.environ.get("PRO_DAILY_CAP", "3"))     # 主动消息一天最多几条
+SLEEP_WORDS = ("睡了", "晚安", "睡觉", "困了", "我睡", "去睡", "睡啦", "睡个好觉", "晚安啦")
 # 白名单(逗号分隔的 user_id);留空=谁发都回(反正官方只有账号本人够得着)
 ALLOW_USERS = [u for u in os.environ.get("ALLOW_USERS", "").split(",") if u]
 
@@ -42,7 +44,8 @@ from wechat_clawbot.auth.accounts import CDN_BASE_URL
 
 LOCK = None  # asyncio.Lock,main 里建
 # 会话状态(给主动发送用):最近是谁、凭证、最近联系时间、上次主动时间
-STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0}
+STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0,
+         "sleeping": False, "pro_date": "", "pro_count": 0}
 
 
 def log(*a):
@@ -312,14 +315,23 @@ async def handle(opts, msg):
         log("跳过(不在白名单)", sender)
         return
     ctx = getattr(msg, "context_token", None)
+    now = time.time()
+    gap = now - (STATE.get("last_msg_ts") or now)
+    raw = extract_text(msg)
+    # 睡眠模式:说"睡了/晚安"→静音;隔超过2小时又来消息=醒了,恢复
+    if raw and any(w in raw for w in SLEEP_WORDS):
+        STATE["sleeping"] = True
+        log("睡眠模式:开(她说要睡了)")
+    elif gap > 7200:
+        STATE["sleeping"] = False
     # 记住会话凭证 + 最近联系时间(给主动发送用)
     STATE["last_sender"] = sender
     if ctx:
         STATE["last_ctx"] = ctx
-    STATE["last_msg_ts"] = time.time()
+    STATE["last_msg_ts"] = now
     save_state()
 
-    text = extract_text(msg)
+    text = raw
     if not text:
         if has_image(msg):
             path = await download_image(msg)
@@ -348,15 +360,17 @@ async def proactive_loop(opts):
             to = STATE.get("last_sender")
             ctx = STATE.get("last_ctx")
             # 触发:有过联系 + 超过设定时长没找他 + 自她上次发消息后还没主动过 + 不在静音时段
+            # 距"她发消息 或 他上次主动"超过 NOCONTACT,且没在睡、不在深夜静音段 → 他来找她
             if (to and ctx and last_msg
-                    and now - last_msg >= NOCONTACT_SECS
-                    and last_pro < last_msg
+                    and now - max(last_msg, last_pro) >= NOCONTACT_SECS
+                    and not STATE.get("sleeping")
                     and not in_quiet_hours()):
-                log("主动触发:很久没联系,让暮声发'我在'")
+                log("主动触发:有阵子没动静,让暮声来找她")
                 r = await run_turn(
                     opts, to, ctx,
-                    "（系统·主动触发,不是桃枝发的）桃枝已经挺久没找你了。"
-                    "直接写一句要发给她的话:让她知道你在、不催、不质问、简短。只写这句话本身。")
+                    "（系统·主动触发,不是桃枝发的）有一阵没和桃枝说话了。"
+                    "给她发条消息——用你自己的方式:想她、逗她、问她在干嘛、念叨一句都行,"
+                    "别端着、别装客气、别说教,就做你自己,简短。只写这句要发的话本身。")
                 if r:
                     STATE["last_proactive_ts"] = time.time()
                     save_state()
