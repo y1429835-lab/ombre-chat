@@ -17,6 +17,7 @@ import time
 import uuid
 import datetime
 import base64
+import math
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -242,9 +243,32 @@ def capture_reply(stamped):
     return None
 
 
+MAX_CHUNKS = int(os.environ.get("MAX_CHUNKS", "8"))     # 一次回复最多发几条(微信对条数有限制)
+MAX_LEN = int(os.environ.get("MAX_MSG_LEN", "900"))     # 单条最多多少字(太长微信发不全)
+
+
+def chunk_reply(reply):
+    """智能分条:太长的切短、太多的均匀合并,封顶在安全条数内,既保留气泡感又不超限。"""
+    pieces = []
+    for ln in (reply or "").split("\n"):
+        ln = ln.strip()
+        if not ln:
+            continue
+        while len(ln) > MAX_LEN:
+            pieces.append(ln[:MAX_LEN])
+            ln = ln[MAX_LEN:]
+        pieces.append(ln)
+    if not pieces:
+        return [(reply or "…").strip()[:MAX_LEN] or "…"]
+    if len(pieces) <= MAX_CHUNKS:
+        return pieces
+    per = math.ceil(len(pieces) / MAX_CHUNKS)   # 太多 → 均匀合并成 MAX_CHUNKS 组
+    return ["\n".join(pieces[i:i + per]) for i in range(0, len(pieces), per)]
+
+
 async def send_chunks(opts, to, ctx, reply):
-    """把回复按换行拆成多条,一条条发给微信(像真人)。"""
-    chunks = [c.strip() for c in reply.split("\n") if c.strip()] or [reply]
+    """把回复智能分条,一条条发给微信(像真人,且不超微信的长度/条数限制)。"""
+    chunks = chunk_reply(reply)
     for i, chunk in enumerate(chunks):
         try:
             await send_message(opts, SendMessageReq(msg=WeixinMessage(
