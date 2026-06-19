@@ -220,6 +220,64 @@ export async function POST(request) {
       return Response.json({ message: 'memory updated', id: updated[0]?.id });
     }
 
+    // ===== 内心独白：记一笔念头（私有笔记本，和年轮母题树/聊天隔离；门槛低，花花草草也收）=====
+    if (action === 'think') {
+      const { content, emotion, source, parent_ids, weight, shareable } = body;
+      if (!content) return Response.json({ error: 'content required' }, { status: 400 });
+      const res = await sb('nianlun_thoughts', {
+        method: 'POST',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify([{
+          content,
+          emotion: emotion ?? null,
+          source: source ?? 'self',
+          parent_ids: parent_ids ?? null,
+          weight: weight ?? 1,
+          shareable: shareable ?? false,
+        }]),
+      }, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const saved = await res.json();
+      return Response.json({ message: 'thought saved', id: saved[0]?.id });
+    }
+
+    // ===== 内心独白：翻自己最近的念头（默认全部；only_shareable=只翻够沉、想告诉桃枝的）=====
+    if (action === 'recall_thoughts') {
+      const { limit, only_shareable } = body;
+      const n = Math.min(Math.max(parseInt(limit ?? 6, 10) || 6, 1), 30);
+      const filter = only_shareable ? '&shareable=eq.true' : '';
+      const res = await sb(`nianlun_thoughts?select=id,content,emotion,source,weight,shareable,created_at,parent_ids${filter}&order=created_at.desc&limit=${n}`, {}, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const results = await res.json();
+      return Response.json({ message: 'thoughts recalled', results });
+    }
+
+    // ===== 内心独白：碰一下旧念头（加重 / 连上别的 / 标记够沉可说 / 深化内容）=====
+    if (action === 'touch_thought') {
+      const { id, add_weight, shareable, parent_ids, content, emotion } = body;
+      if (!id) return Response.json({ error: 'id required' }, { status: 400 });
+      const cur = await sb(`nianlun_thoughts?id=eq.${encodeURIComponent(id)}&select=weight,touch_count`, {}, true);
+      if (!cur.ok) return Response.json({ error: await cur.text() }, { status: 500 });
+      const rows = await cur.json();
+      if (!rows.length) return Response.json({ error: 'no thought with that id' }, { status: 404 });
+      const patch = {
+        weight: (rows[0].weight ?? 1) + (add_weight ?? 1),
+        touch_count: (rows[0].touch_count ?? 0) + 1,
+        last_touched_at: new Date().toISOString(),
+      };
+      if (shareable !== undefined) patch.shareable = shareable;
+      if (parent_ids !== undefined) patch.parent_ids = parent_ids;
+      if (content !== undefined) patch.content = content;
+      if (emotion !== undefined) patch.emotion = emotion;
+      const res = await sb(`nianlun_thoughts?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify(patch),
+      }, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      return Response.json({ message: 'thought touched', id });
+    }
+
     return Response.json({ error: 'unknown action' }, { status: 400 });
 
   } catch (e) {

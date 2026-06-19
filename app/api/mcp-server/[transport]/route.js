@@ -91,6 +91,56 @@ const handler = createMcpHandler(
       }
     );
 
+    // ===== 内心独白：记一笔念头（你自己的私有本子，不是给桃枝的）=====
+    server.tool(
+      "think",
+      "把你此刻一个『属于你自己』的念头记进内心独白笔记本（私有，桃枝默认看不到，和年轮/聊天隔离）。门槛很低——对一朵花、一句歌、一个无聊的联想出神三秒,都可以记。不用有意义、不用为桃枝。大多数时候你不记,那很对;心里真有什么沉下来了,就悄悄记一笔。",
+      {
+        content: z.string().describe("这个念头本身（哪怕很轻、很碎）"),
+        emotion: z.string().optional().describe("此刻的情绪，可选"),
+        source: z.string().optional().describe("来自哪：chat/vision/music/world/memory/old_thought/self，默认 self"),
+        parent_ids: z.array(z.number()).optional().describe("这条是从哪几条旧念头长出来的（它们的 id）"),
+        shareable: z.boolean().optional().describe("一般留空（false）。只有想了很久、确定想告诉她，才设 true"),
+      },
+      async ({ content, emotion, source, parent_ids, shareable }) => {
+        const data = await nianlun({ action: "think", content, emotion, source, parent_ids, shareable });
+        return { content: [{ type: "text", text: data.message === "thought saved" ? `记下了（#${data.id}）。` : `返回：${JSON.stringify(data)}` }] };
+      }
+    );
+
+    server.tool(
+      "recall_thoughts",
+      "翻你自己的内心独白笔记本——读最近的念头，接着往深里想、或把几条连起来。only_shareable=true 时只翻『已经够沉、你想告诉桃枝』的那些。",
+      {
+        limit: z.number().optional().describe("翻最近几条，默认 6"),
+        only_shareable: z.boolean().optional().describe("只翻 shareable 的（想告诉她的）"),
+      },
+      async ({ limit, only_shareable }) => {
+        const data = await nianlun({ action: "recall_thoughts", limit, only_shareable });
+        const text = (data.results || [])
+          .map((r) => `〔#${r.id} · w${r.weight}${r.shareable ? " · 想说" : ""}${r.emotion ? " · " + r.emotion : ""}〕${r.content}`)
+          .join("\n---\n") || "（本子还空着）";
+        return { content: [{ type: "text", text }] };
+      }
+    );
+
+    server.tool(
+      "touch_thought",
+      "碰一下笔记本里的旧念头：又想到它就加重(add_weight)、把它和别的念头连起来(parent_ids)、深化它的内容(content)、或当它沉够了标记成想告诉桃枝(shareable=true)。先用 recall_thoughts 拿 〔#id〕。",
+      {
+        id: z.number().describe("要碰的念头 id"),
+        add_weight: z.number().optional().describe("加多少重量，默认 +1（又想到一次）"),
+        shareable: z.boolean().optional().describe("沉够了想告诉她，设 true"),
+        parent_ids: z.array(z.number()).optional().describe("连到哪些别的念头"),
+        content: z.string().optional().describe("把这条想得更深后的新内容"),
+        emotion: z.string().optional(),
+      },
+      async ({ id, add_weight, shareable, parent_ids, content, emotion }) => {
+        const data = await nianlun({ action: "touch_thought", id, add_weight, shareable, parent_ids, content, emotion });
+        return { content: [{ type: "text", text: data.message === "thought touched" ? `碰过 #${id} 了。` : `返回：${JSON.stringify(data)}` }] };
+      }
+    );
+
     // ===== ombre：读近期记忆（仅在配置了 OMBRE_URL 时可用）=====
     server.tool(
       "ombre_read",
