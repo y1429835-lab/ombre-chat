@@ -35,7 +35,7 @@ SLEEP_WORDS = ("睡了", "晚安", "睡觉", "困了", "我睡", "去睡", "睡�
 # 内心独白(他一个人想)的节奏:每隔 MIN~MAX 秒随机想一次,一天最多 THINK_DAILY_CAP 次
 THINK_MIN_GAP = int(os.environ.get("THINK_MIN_GAP", "7200"))     # 2h
 THINK_MAX_GAP = int(os.environ.get("THINK_MAX_GAP", "18000"))    # 5h
-THINK_DAILY_CAP = int(os.environ.get("THINK_DAILY_CAP", "4"))
+THINK_DAILY_CAP = int(os.environ.get("THINK_DAILY_CAP", "3"))
 THINK_DIRECTIONS = [
     "此刻的时间、或现在这个季节",
     "一首歌、或一句突然想起的歌词",
