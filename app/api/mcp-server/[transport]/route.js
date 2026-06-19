@@ -34,9 +34,29 @@ const handler = createMcpHandler(
       },
       async ({ query, match_count }) => {
         const data = await nianlun({ action: "recall", query, match_count: match_count ?? 5 });
-        const results = (data.results || []).map((r) => r.content).filter(Boolean);
+        const results = (data.results || [])
+          .filter((r) => r && r.content)
+          .map((r) => `〔#${r.id}${r.status && r.status !== "settled" ? " · " + r.status : ""}〕${r.content}`);
         const text = results.length ? results.join("\n---\n") : "（没搜到相关记忆）";
         return { content: [{ type: "text", text }] };
+      }
+    );
+
+    // ===== 年轮：温和更新一条记忆 =====
+    server.tool(
+      "update_memory",
+      "温和更新一条年轮记忆（按 id）：改正/更新它的内容，或把它标记为 digested（旧理解被新的取代）。不会硬删——旧的留着当历史。先用 recall_memory 搜到要改那条、拿它的 〔#id〕，再用这个改。",
+      {
+        id: z.number().describe("要改的记忆 id（recall_memory 返回里 〔#id〕 那个数字）"),
+        content: z.string().optional().describe("新的内容（改正/更新这条；会重算搜索向量）"),
+        status: z.enum(["settled", "open", "digested"]).optional().describe("settled=定了 / open=还没完 / digested=旧理解已被新的取代"),
+        importance: z.number().optional().describe("重要程度 1-10"),
+        pinned: z.boolean().optional().describe("是否钉住"),
+      },
+      async ({ id, content, status, importance, pinned }) => {
+        const data = await nianlun({ action: "update_memory", id, content, status, importance, pinned });
+        const ok = data.message === "memory updated";
+        return { content: [{ type: "text", text: ok ? `已更新 #${data.id}。` : `返回：${JSON.stringify(data)}` }] };
       }
     );
 

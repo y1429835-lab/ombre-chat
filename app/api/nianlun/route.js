@@ -189,6 +189,37 @@ export async function POST(request) {
       return Response.json({ message: 'session recalled', results });
     }
 
+    // ===== 温和更新一条年轮记忆（按 id 改内容/标记被取代；不硬删；改内容会重算 embedding）=====
+    if (action === 'update_memory') {
+      const { id, content, status, tags, pinned, importance, valence, arousal } = body;
+      if (!id) return Response.json({ error: 'id required' }, { status: 400 });
+      const patch = {};
+      if (content !== undefined) {
+        patch.content = content;
+        patch.embedding = await getEmbedding(content);   // 内容变了，搜索向量也更新
+      }
+      if (status !== undefined) patch.status = status;     // settled / open / digested(被取代)
+      if (tags !== undefined) patch.tags = tags;
+      if (pinned !== undefined) patch.pinned = pinned;
+      if (importance !== undefined) patch.importance = importance;
+      if (valence !== undefined) patch.valence = valence;
+      if (arousal !== undefined) patch.arousal = arousal;
+      if (Object.keys(patch).length === 0) {
+        return Response.json({ error: 'nothing to update' }, { status: 400 });
+      }
+      const res = await sb(`nianlun_memory?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify(patch),
+      }, true);
+      if (!res.ok) return Response.json({ error: await res.text() }, { status: 500 });
+      const updated = await res.json();
+      if (!updated || updated.length === 0) {
+        return Response.json({ error: 'no memory with that id' }, { status: 404 });
+      }
+      return Response.json({ message: 'memory updated', id: updated[0]?.id });
+    }
+
     return Response.json({ error: 'unknown action' }, { status: 400 });
 
   } catch (e) {
