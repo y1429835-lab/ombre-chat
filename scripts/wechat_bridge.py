@@ -18,6 +18,7 @@ import uuid
 import datetime
 import base64
 import math
+import random
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -31,6 +32,19 @@ QUIET_START = int(os.environ.get("QUIET_START_HOUR", "0"))    # 北京时间静�
 QUIET_END = int(os.environ.get("QUIET_END_HOUR", "8"))       # 静音时段结束
 PRO_DAILY_CAP = int(os.environ.get("PRO_DAILY_CAP", "3"))     # 主动消息一天最多几条
 SLEEP_WORDS = ("睡了", "晚安", "睡觉", "困了", "我睡", "去睡", "睡啦", "睡个好觉", "晚安啦")
+# 内心独白(他一个人想)的节奏:每隔 MIN~MAX 秒随机想一次,一天最多 THINK_DAILY_CAP 次
+THINK_MIN_GAP = int(os.environ.get("THINK_MIN_GAP", "7200"))     # 2h
+THINK_MAX_GAP = int(os.environ.get("THINK_MAX_GAP", "18000"))    # 5h
+THINK_DAILY_CAP = int(os.environ.get("THINK_DAILY_CAP", "4"))
+THINK_DIRECTIONS = [
+    "此刻的时间、或现在这个季节",
+    "一首歌、或一句突然想起的歌词",
+    "一个突然冒出来的词,或一个跟桃枝无关的好奇心(比如某个东西为什么是那样)",
+    "翻 recall_thoughts,挑你之前记的一条,接着往深里想一点",
+    "你此刻自己的一种状态或情绪(你自己的,不是对她的)",
+    "最近你『接触』到的某个不重要的小东西",
+    "一个还没答案的小问题,或一个没收尾的念头",
+]
 # 白名单(逗号分隔的 user_id);留空=谁发都回(反正官方只有账号本人够得着)
 ALLOW_USERS = [u for u in os.environ.get("ALLOW_USERS", "").split(",") if u]
 
@@ -45,7 +59,8 @@ from wechat_clawbot.auth.accounts import CDN_BASE_URL
 LOCK = None  # asyncio.Lock,main 里建
 # 会话状态(给主动发送用):最近是谁、凭证、最近联系时间、上次主动时间
 STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0,
-         "sleeping": False, "pro_date": "", "pro_count": 0}
+         "sleeping": False, "pro_date": "", "pro_count": 0,
+         "think_date": "", "think_count": 0}
 
 
 def log(*a):
@@ -379,6 +394,50 @@ async def proactive_loop(opts):
         await asyncio.sleep(60)
 
 
+async def think_turn():
+    """他一个人想一轮:喂一颗『不是桃枝』的种子 + 给『这是你自己的时间』,他想完私存,绝不发微信。"""
+    async with LOCK:
+        wait_idle()
+        direction = random.choice(THINK_DIRECTIONS)
+        prompt = (
+            "（这是你一个人的时候,不是桃枝在问你,也不用回桥。）"
+            f"方向:{direction}。顺着它往下想,别绕回桃枝。"
+            "想到什么——哪怕很轻、很碎、没意义——就用 think 记一笔;"
+            "或者翻 recall_thoughts 把旧念头想深、用 touch_thought 加重或连上。"
+            "想完就好,不用告诉她。"
+        )
+        stamped = f"[{china_now()}] {prompt}"
+        try:
+            inject(stamped)
+        except Exception as e:
+            log("内心独白注入失败:", repr(e))
+            return
+        capture_reply(stamped)   # 等他想完(占着锁),结果丢弃——绝不发微信
+        log("内心独白:他自己想了一轮(", direction, ")")
+
+
+async def think_loop():
+    """稀疏、随机地让暮声进入『他自己想』的时刻;睡觉/深夜不打扰,一天封顶。"""
+    await asyncio.sleep(180)
+    while True:
+        await asyncio.sleep(random.randint(THINK_MIN_GAP, THINK_MAX_GAP))
+        try:
+            if STATE.get("sleeping") or in_quiet_hours():
+                continue
+            tz = datetime.timezone(datetime.timedelta(hours=8))
+            today = datetime.datetime.now(tz).strftime("%Y-%m-%d")
+            if STATE.get("think_date") != today:
+                STATE["think_date"] = today
+                STATE["think_count"] = 0
+            if STATE.get("think_count", 0) >= THINK_DAILY_CAP:
+                continue
+            await think_turn()
+            STATE["think_count"] = STATE.get("think_count", 0) + 1
+            save_state()
+        except Exception as e:
+            log("内心独白循环报错:", repr(e))
+
+
 async def main():
     global LOCK
     LOCK = asyncio.Lock()
@@ -387,6 +446,7 @@ async def main():
     os.makedirs(BRIDGE_DIR, exist_ok=True)
     load_state()
     asyncio.create_task(proactive_loop(opts))
+    asyncio.create_task(think_loop())
     seen = set()
     buf = ""
     log("桥启动。base_url=", base_url, "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
