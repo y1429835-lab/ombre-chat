@@ -30,7 +30,7 @@ import urllib.request
 NIANLUN_API = os.environ.get("NIANLUN_API", "https://health.ggtz.cc/api/nianlun")
 # 年轮接口暗号:env 优先,其次读文件(和 intiface_url.txt 一个套路,方便桃枝放一份)
 KEY_FILE = os.path.expanduser("~/musheng/.bridge/memory_key.txt")
-THRESHOLD = float(os.environ.get("SURFACE_THRESHOLD", "0.5"))   # 余弦相似度门槛,低于这个不浮
+THRESHOLD = float(os.environ.get("SURFACE_THRESHOLD", "0.45"))  # 余弦门槛(bge-m3中文偏低,这库好匹配约0.52~0.58)
 MAX_LOAD = int(os.environ.get("SURFACE_MAX", "2"))             # 最多浮几条
 LIGHT_COUNT = int(os.environ.get("SURFACE_LIGHT_COUNT", "8"))  # 轻搜召回几条候选
 FULL_COUNT = int(os.environ.get("SURFACE_FULL_COUNT", "12"))   # 全搜召回几条候选
