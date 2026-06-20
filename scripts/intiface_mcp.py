@@ -14,7 +14,18 @@ import os
 import websockets
 from mcp.server.fastmcp import FastMCP
 
-INTIFACE_URL = os.environ.get("INTIFACE_URL", "ws://100.122.106.3:12345")
+URL_FILE = os.path.expanduser("~/musheng/.bridge/intiface_url.txt")
+
+
+def _url():
+    """每次现读 Intiface 地址:改设备只要写 ~/musheng/.bridge/intiface_url.txt,不用重启暮声。"""
+    try:
+        v = open(URL_FILE).read().strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return os.environ.get("INTIFACE_URL", "ws://100.88.82.65:12345")   # 默认 iPad
 
 mcp = FastMCP("toy")
 
@@ -52,7 +63,7 @@ async def _scalar(ws, idx, value):
 async def _run_vibrate(intensity, seconds):
     intensity = max(0.0, min(1.0, float(intensity)))
     seconds = max(0.0, min(float(seconds or 0), 120.0))   # 单次最多 120 秒,安全
-    async with websockets.connect(INTIFACE_URL, open_timeout=10, close_timeout=5) as ws:
+    async with websockets.connect(_url(), open_timeout=10, close_timeout=5) as ws:
         devices = await _devices(ws)
         if not devices:
             return "没找到玩具——确认手机 Intiface 开着(前台)、Jive 已连。"
@@ -85,7 +96,7 @@ async def stop() -> str:
 
 
 async def _run_pattern(steps):
-    async with websockets.connect(INTIFACE_URL, open_timeout=10, close_timeout=5) as ws:
+    async with websockets.connect(_url(), open_timeout=10, close_timeout=5) as ws:
         devices = await _devices(ws)
         if not devices:
             return "没找到玩具——确认手机 Intiface 开着(前台)、Jive 已连。"
