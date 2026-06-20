@@ -33,19 +33,31 @@
    ```
    能打出带 `text` 的一坨小红书文字 = 工位成了。`need_login:true` 就是还没登,去第 5 步扫码。
 
-## 第二段 · 接到暮声(Tailscale + VPS 一次性)
+## 第二段 · 接到暮声(反向 SSH 通道 —— 实测可用)
 
-1. Mac 装 **Tailscale**(和 iPad/手机/VPS 同一个账号登录),记下 Mac 的 Tailscale IP(`100.x.x.x`)。
-2. VPS 上放暮声的"小红书手"和配置:
+> 原想用 Tailscale 当管子,但桃枝家 NAT 让直连 TCP 穿不过去(`tailscale ping` 通、
+> 数据流超时)。改用**反向 SSH 通道**:Mac 从里往外拨 VPS,从内向外的连接家用路由必放行,
+> 铁稳、且不依赖任何 Tailscale 地址。小红书仍只由 Mac、住宅 IP 访问,VPS 永不露面。
+
+1. VPS 上放暮声的"小红书手":
    ```bash
    curl -fsSL https://raw.githubusercontent.com/y1429835-lab/ombre-chat/main/xhs-station/xhs.sh -o ~/xhs.sh
-   printf '%s\n%s\n' '你Mac的Tailscale_IP' 'taozhi-musheng-xhs-2026' > ~/musheng/.bridge/xhs.txt
+   printf '%s\n%s\n' '127.0.0.1' 'taozhi-musheng-xhs-2026' > ~/musheng/.bridge/xhs.txt
    ```
-3. VPS 上验通(Mac 的 start.command 得开着):
+   (地址写 `127.0.0.1` —— 走 SSH 管子,工位会出现在 VPS 本地的 8848。)
+
+2. **Mac** 上拨通道(新开一个终端窗口,`<VPS公网IP>` 换成实际地址):
    ```bash
-   bash ~/xhs.sh search 上海 周末
+   ssh -N -R 8848:localhost:8848 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes root@<VPS公网IP>
    ```
-   读到小红书正文 = 打通了。
+   首次问 `yes`,再输 VPS 密码;之后静默 = 管子通了,窗口别关。
+
+3. VPS 上验通(Mac 工位 + SSH 通道都开着):
+   ```bash
+   bash ~/xhs.sh search 美食
+   ```
+   读到小红书正文 = 打通。
+
 
 ## 第三段 · 日常 + 告诉暮声
 
