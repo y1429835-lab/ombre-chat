@@ -10,7 +10,7 @@ import os from "os";
 import path from "path";
 import { chromium } from "playwright";
 
-const VERSION = 5;
+const VERSION = 6;
 const PORT = parseInt(process.env.XHS_PORT || "8848", 10);
 const TOKEN = process.env.XHS_TOKEN || "";
 const PROFILE = path.join(os.homedir(), ".xhs-station-profile");
@@ -91,7 +91,19 @@ async function go(url) {
 
   let curUrl = url;
   try { curUrl = page.url(); } catch {}
-  const needLogin = /登录|扫码|手机号登录/.test(data.pageTitle) || (data.text.length < 80 && data.notes.length === 0);
+
+  // 按页面类型裁剪,省 token 又不丢内容:
+  //   详情页(/explore /discovery)→ 只留这条笔记的标题+正文+评论节选,相关笔记留几条;
+  //   列表/搜索页 → 只给"标题+链接"清单,正文一概不发(抓不到清单才退回一小段文字兜底)。
+  const isNote = /\/(explore|discovery\/item)\/[0-9a-fA-F]{8,}/.test(curUrl);
+  if (isNote) {
+    data.notes = data.notes.slice(0, 5);
+    data.text = data.text.slice(0, 2800);            // caption + 部分评论
+  } else {
+    data.text = data.notes.length ? "" : data.text.slice(0, 1500);
+  }
+
+  const needLogin = /登录|扫码|手机号登录/.test(data.pageTitle) || (data.text.length < 80 && data.notes.length === 0 && !data.desc);
   console.error("[go] ←", JSON.stringify(data.pageTitle), "| 笔记", data.notes.length, "条 | 正文", data.text.length, "字", needLogin ? "(疑似没登录)" : "");
   return { ok: true, url: curUrl, need_login: needLogin, ...data };
 }
