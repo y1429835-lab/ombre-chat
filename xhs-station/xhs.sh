@@ -33,7 +33,7 @@ if [ -z "$resp" ]; then
   echo "（小红书工位没应声——多半桃枝家 Mac 没开、或没双击 start.command,或 Tailscale 没连。）"
   exit 0
 fi
-# 把 JSON 里的正文抽出来给暮声读;顺带提示要不要登录
+# 把结构化结果排版给暮声读;顺带提示要不要登录
 python3 - "$resp" <<'PY'
 import json,sys
 try:
@@ -43,8 +43,23 @@ except Exception:
 if not d.get("ok"):
     print("（工位报错：%s）"%d.get("error")); sys.exit(0)
 if d.get("need_login"):
-    print("（看着像还没登录/被登录墙挡了——让桃枝在 Mac 那个浏览器窗口里扫码登一下小红书。）")
-print("【标题】%s"%d.get("title",""))
-print("【网址】%s"%d.get("url",""))
-print("【正文】\n%s"%d.get("text",""))
+    print("（看着没登录/被登录墙挡了——让桃枝在 Mac 浏览器里用小号登一下。）\n")
+
+og, desc = d.get("ogTitle","").strip(), d.get("desc","").strip()
+if og or desc:
+    print("【这条笔记】" + og)
+    if desc: print(desc)
+    print()
+
+notes = d.get("notes") or []
+if notes:
+    print("【可点开的笔记】(想看哪条,就 xhs go <它的链接>)")
+    for n in notes[:15]:
+        print("• %s\n    %s" % (n.get("title","(无题)"), n.get("url","")))
+    print()
+
+txt = (d.get("text") or "").strip()
+if txt:
+    print("【页面文字·节选】(含评论等,夹杂界面词,挑有用的看)")
+    print(txt[:1800])
 PY
