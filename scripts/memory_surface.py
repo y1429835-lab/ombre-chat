@@ -38,6 +38,8 @@ MIN_LEN = int(os.environ.get("SURFACE_MIN_LEN", "4"))          # 短于这个字
 TIMEOUT = float(os.environ.get("SURFACE_TIMEOUT", "6"))        # 搜索超时(秒),超了就放行
 STATE_DIR = os.path.expanduser(os.environ.get("SURFACE_STATE_DIR", "~/.claude/.surface_state"))
 RERANK = os.environ.get("RERANK", "0") == "1"                  # V2 开关(默认关)
+# 年轮在 Cloudflare 后面:裸 urllib 的 UA 会被当机器人拦(error 1010)。戴个正常浏览器标识。
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 # 噪音/应答词:这些当回复发来,搜了也是噪音,直接跳过(零延迟)
 NOISE = {
@@ -96,7 +98,7 @@ def decide_tier(t):
 
 def recall(query, count, key):
     body = json.dumps({"action": "recall", "query": query, "match_count": count}).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": UA}
     if key:
         headers["x-memory-key"] = key
     req = urllib.request.Request(NIANLUN_API, data=body, headers=headers, method="POST")
@@ -176,7 +178,7 @@ def rerank(query, cands, ctx):
         }).encode("utf-8")
         req = urllib.request.Request(
             "https://api.deepseek.com/chat/completions", data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api}", "User-Agent": UA},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
