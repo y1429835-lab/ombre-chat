@@ -86,8 +86,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "0.0.0.0", async () => {
   console.log(`小红书工位起来了,听 :${PORT}(Tailscale 那台 VPS 够得着)。`);
   console.log("头一次:等下面弹出的浏览器开了,扫码登一次小红书,登录态会记住。");
   console.log("关掉这个终端窗口 = 收工。");
+  try {
+    await go("https://www.xiaohongshu.com/explore");   // 一启动就开到小红书,方便头次扫码登录
+  } catch {
+    /* 网络/未登录都无所谓,窗口已经开着,你能直接在里头登 */
+  }
 });
+
