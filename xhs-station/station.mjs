@@ -174,12 +174,33 @@ async function handleGo(res, url) {
   }
 }
 
+// 诊断:搜一下,把 __INITIAL_STATE__ 里 xsecToken 附近的结构 dump 出来,好对症修挖链接的逻辑
+async function handleDebug(res) {
+  try {
+    const out = await locked(() => withTimeout((async () => {
+      await ensure();
+      try { await page.goto("https://www.xiaohongshu.com/search_result?keyword=美食", { waitUntil: "domcontentloaded", timeout: 25000 }); } catch {}
+      await page.waitForTimeout(3500);
+      return await page.evaluate(() => {
+        const st = window.__INITIAL_STATE__ || {};
+        let s = ""; try { s = JSON.stringify(st); } catch (e) { s = ""; }
+        const i = s.search(/xsec/i);
+        return { keys: Object.keys(st), len: s.length, hasXsec: i >= 0, around: i >= 0 ? s.slice(Math.max(0, i - 700), i + 500) : s.slice(0, 1200) };
+      });
+    })(), 45000, "debug"));
+    return send(res, 200, { ok: true, ...out });
+  } catch (e) {
+    return send(res, 500, { ok: false, error: String(e && e.message ? e.message : e) });
+  }
+}
+
 const server = http.createServer((req, res) => {
   let u;
   try { u = new URL(req.url, "http://x"); } catch { return send(res, 400, { ok: false, error: "bad url" }); }
   if (TOKEN && u.searchParams.get("token") !== TOKEN) return send(res, 401, { ok: false, error: "bad token" });
 
   if (u.pathname === "/health") return send(res, 200, { ok: true, v: VERSION });
+  if (u.pathname === "/debug") return handleDebug(res);
   if (u.pathname === "/search") {
     const q = u.searchParams.get("q") || "";
     return handleGo(res, "https://www.xiaohongshu.com/search_result?keyword=" + encodeURIComponent(q));
