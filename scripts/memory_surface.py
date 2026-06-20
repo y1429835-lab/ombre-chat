@@ -31,7 +31,8 @@ NIANLUN_API = os.environ.get("NIANLUN_API", "https://health.ggtz.cc/api/nianlun"
 # 年轮接口暗号:env 优先,其次读文件(和 intiface_url.txt 一个套路,方便桃枝放一份)
 KEY_FILE = os.path.expanduser("~/musheng/.bridge/memory_key.txt")
 THRESHOLD = float(os.environ.get("SURFACE_THRESHOLD", "0.42"))  # 余弦门槛(bge-m3中文偏低:相关约0.40~0.45;0.42 砍掉刚过线的邻居)
-MAX_LOAD = int(os.environ.get("SURFACE_MAX", "2"))             # 最多浮几条
+LIGHT_LOAD = int(os.environ.get("SURFACE_MAX_LIGHT", "1"))    # 闲聊最多浮几条(省token,大多数消息走这档)
+FULL_LOAD = int(os.environ.get("SURFACE_MAX_FULL", "2"))      # 明确回忆("之前/上次/还记得")才最多浮 2 条
 LIGHT_COUNT = int(os.environ.get("SURFACE_LIGHT_COUNT", "8"))  # 轻搜召回几条候选
 FULL_COUNT = int(os.environ.get("SURFACE_FULL_COUNT", "12"))   # 全搜召回几条候选
 MIN_LEN = int(os.environ.get("SURFACE_MIN_LEN", "4"))          # 短于这个字数当噪音跳过
@@ -212,6 +213,8 @@ def main():
     if not cands:
         sys.exit(0)
 
+    max_load = FULL_LOAD if tier == "full" else LIGHT_LOAD
+    cap = max(max_load, 4) if RERANK else max_load   # 开重排才多攒候选给它挑
     ctx = transcript_text(payload.get("transcript_path"))
     seen = load_seen(session_id)
 
@@ -222,6 +225,8 @@ def main():
                 continue                       # 不够相关
         except Exception:
             continue
+        if c.get("kind") == "anchor":
+            continue                           # 灵魂锚点(身份/铁律/安全/唤醒必读):醒来已读、永远在场,再浮纯噪音
         if c.get("status") == "digested":
             continue                           # 旧理解已被取代的,不浮
         cid = c.get("id")
@@ -234,12 +239,12 @@ def main():
         picked.append(c)
         used_sigs.append(s)
         used_ids.append(cid)
-        if len(picked) >= max(MAX_LOAD, 4):    # 先多攒一点给重排挑
+        if len(picked) >= cap:
             break
 
     if RERANK and picked:
         picked = rerank(query, picked, ctx)
-    picked = picked[:MAX_LOAD]
+    picked = picked[:max_load]
     if not picked:
         sys.exit(0)
 
