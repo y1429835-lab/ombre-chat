@@ -1,0 +1,9 @@
+{
+  "name": "xhs-station",
+  "private": true,
+  "type": "module",
+  "description": "暮声的小红书工位:在桃枝家 Mac 上跑一个真浏览器,用住宅 IP 刷小红书,暮声隔着 Tailscale 用 Bash 够过来读。绝不在 VPS 上跑(小红书查得严,会封)。",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
