@@ -1,17 +1,15 @@
-// 小红书工位 v7 —— 在桃枝家 Mac 上跑真浏览器(住宅 IP)刷小红书,暮声隔着 SSH 通道读。
+// 小红书工位 v8 —— 在桃枝家 Mac 上跑真浏览器(住宅 IP)刷小红书,暮声隔着 SSH 通道读。
 //
-// v7 改动:
-//   · 搜索/列表页:从小红书 SPA 的 window.__INITIAL_STATE__ 里挖出每条笔记的 id + xsecToken,
-//     拼成"带 token 的完整链接"(卡片 <a> 里没有 token,只有内部状态里有)。这样暮声能直接 go 进去。
-//     挖不到就退回抓 <a> / 文字。
-//   · 清洗页面文字:滤掉导航/备案/页脚样板噪音 + 去连续重复;
-//   · 笔记详情页:正文用 meta(干净),文字节选从"共N条评论"切起 = 只给评论。
+// v8 突破防爬:不再扒页面/状态(那里没有 token),改成『截小红书自己的 API 返回』——
+//   /api/sns/web/.../search/notes(搜索)、homefeed(首页)里每条笔记都带 id + xsec_token,
+//   直接拼成完整链接,暮声就能 go 进任意一条看干货。
+// 详情页仍用 meta(标题/正文)+ 文字节选(评论);按页面类型裁剪省 token;锁串行 + 硬超时。
 import http from "http";
 import os from "os";
 import path from "path";
 import { chromium } from "playwright";
 
-const VERSION = 7;
+const VERSION = 8;
 const PORT = parseInt(process.env.XHS_PORT || "8848", 10);
 const TOKEN = process.env.XHS_TOKEN || "";
 const PROFILE = path.join(os.homedir(), ".xhs-station-profile");
@@ -19,6 +17,7 @@ const MAX_TEXT = parseInt(process.env.XHS_MAX_TEXT || "6000", 10);
 
 let ctx = null;
 let page = null;
+let apiItems = [];   // 本次导航从小红书 API 截到的笔记(带 token)
 
 let chain = Promise.resolve();
 function locked(fn) {
@@ -33,7 +32,6 @@ function withTimeout(p, ms, label) {
   return Promise.race([Promise.resolve(p).finally(() => clearTimeout(t)), timeout]);
 }
 
-// 滤掉小红书页面里的导航/备案/页脚样板噪音 + 去连续重复行
 const BOILER = [
   /创作中心|业务合作|关于我们|意见反馈|网页版|扫码查看|打开小红书App|问题反馈|返回首页/,
   /沪ICP备|营业执照|公网安备|增值电信|医疗器械|互联网药品|网络文化经营|个性化推荐算法|网信算备|行吟信息|违法不良信息|举报电话|举报中心|举报专区|自营经营者|经营许可/,
@@ -52,6 +50,28 @@ function cleanText(raw) {
   return out.join("\n");
 }
 
+// 从小红书 API 返回里抽笔记(id + xsec_token + 标题/作者/赞)
+function harvest(json) {
+  try {
+    const items = (json && json.data && (json.data.items || json.data.notes)) || [];
+    for (const it of items) {
+      const nc = it.note_card || it.noteCard || {};
+      const id = it.id || it.note_id || it.noteId;
+      const tok = it.xsec_token || it.xsecToken || nc.xsec_token || nc.xsecToken || "";   // 用笔记的 token,不是作者的
+      if (!id || !tok) continue;
+      const ii = nc.interact_info || nc.interactInfo || {};
+      apiItems.push({
+        id,
+        token: tok,
+        title: String(nc.display_title || nc.title || "").replace(/\s+/g, " ").trim().slice(0, 80),
+        author: String((nc.user || {}).nickname || (nc.user || {}).nick_name || "").trim(),
+        likes: String(ii.liked_count || ii.likedCount || ""),
+        comments: String(ii.comment_count || ii.commentCount || ""),
+      });
+    }
+  } catch {}
+}
+
 async function ensure() {
   if (ctx && page && !page.isClosed()) return;
   ctx = await chromium.launchPersistentContext(PROFILE, {
@@ -61,75 +81,43 @@ async function ensure() {
     args: ["--disable-blink-features=AutomationControlled"],
   });
   page = ctx.pages()[0] || (await ctx.newPage());
+  // 挂一次:截住小红书的搜索/首页 API,拿带 token 的笔记
+  page.on("response", async (resp) => {
+    try {
+      const url = resp.url();
+      if (!/\/api\/sns\/web\/.*(search\/notes|homefeed|feed)/.test(url)) return;
+      if (!/json/.test(resp.headers()["content-type"] || "")) return;
+      harvest(JSON.parse(await resp.text()));
+    } catch {}
+  });
 }
 
 async function go(url) {
   console.error("[go] →", url);
   await ensure();
+  apiItems = [];                       // 清空,准备截这次导航的 API
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
   } catch (e) {
     console.error("[go] goto 没等到加载完,直接读现有内容:", e.message);
   }
   await page.waitForTimeout(2500);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 4; i++) {         // 滚几下:加载更多结果(更多 API)+ 信息流
     try { await page.mouse.wheel(0, 2200); } catch {}
     await page.waitForTimeout(1000);
   }
 
-  let data = { pageTitle: "", ogTitle: "", desc: "", notes: [], text: "" };
+  // 详情页用的 meta + 文字
+  let meta = { pageTitle: "", ogTitle: "", desc: "", text: "" };
   try {
-    data = await withTimeout(page.evaluate((MAX) => {
+    meta = await withTimeout(page.evaluate((MAX) => {
       const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
       const metaC = (sel) => clean(document.querySelector(sel)?.getAttribute("content"));
-
-      // ① 从 SPA 状态里挖带 token 的笔记(防爬的真正突破口)
-      const notes = [];
-      try {
-        const seen = new Set();
-        const stack = [window.__INITIAL_STATE__];
-        let budget = 30000;
-        while (stack.length && budget-- > 0) {
-          const o = stack.pop();
-          if (!o || typeof o !== "object") continue;
-          const id = o.id || o.noteId;
-          const token = o.xsecToken || o.xsec_token;
-          if (id && token && /^[0-9a-fA-F]{20,}$/.test(String(id)) && !seen.has(id)) {
-            seen.add(id);
-            const card = o.noteCard || o.note_card || o;
-            const user = card.user || o.user || {};
-            const ii = card.interactInfo || card.interact_info || {};
-            notes.push({
-              title: clean(card.displayTitle || card.display_title || card.title).slice(0, 80),
-              author: clean(user.nickname || user.nickName),
-              likes: String(ii.likedCount || ii.liked_count || "").slice(0, 12),
-              url: "https://www.xiaohongshu.com/explore/" + id + "?xsec_token=" + encodeURIComponent(token) + "&xsec_source=pc_search",
-            });
-          }
-          for (const k in o) { const v = o[k]; if (v && typeof v === "object") stack.push(v); }
-        }
-      } catch (e) { /* 没有就退回别的法子 */ }
-
-      // ② 退路:抓 <a> 里的笔记链接(多半没 token,但聊胜于无)
-      if (notes.length === 0) {
-        const seen = new Set();
-        for (const a of document.querySelectorAll("a")) {
-          const m = (a.href || "").match(/https?:\/\/(?:www\.)?xiaohongshu\.com\/(?:explore|discovery\/item|search_result)\/[0-9a-fA-F]{8,}[^"'\s]*/);
-          if (!m) continue;
-          if (seen.has(m[0])) continue;
-          seen.add(m[0]);
-          const t = clean(a.innerText || a.getAttribute("aria-label"));
-          if (t) notes.push({ title: t.slice(0, 80), author: "", likes: "", url: m[0] });
-          if (notes.length >= 15) break;
-        }
-      }
-
       const bodyText = (document.body ? document.body.innerText : "").replace(/\n{3,}/g, "\n\n").trim();
       return {
         pageTitle: document.title,
         ogTitle: metaC('meta[property="og:title"]'),
         desc: metaC('meta[name="description"]'),
-        notes: notes.slice(0, 15),
         text: bodyText.slice(0, MAX),
       };
     }, MAX_TEXT), 10000, "读页面");
@@ -137,25 +125,44 @@ async function go(url) {
     console.error("[go] 读页面失败:", e.message);
   }
 
-  let curUrl = url;
-  try { curUrl = page.url(); } catch {}
-
-  // 按页面类型裁剪 + 清洗,省 token 又不丢内容
-  const isNote = /\/(explore|discovery\/item)\/[0-9a-fA-F]{8,}/.test(curUrl);
-  let text = cleanText(data.text);
-  if (isNote) {
-    const idx = text.search(/共\s*[\d.万]+\s*条评论/);
-    if (idx >= 0) text = text.slice(idx);          // 从"共N条评论"起 = 只留评论,跳过前面导航/标题
-    data.notes = data.notes.slice(0, 5);
-    data.text = text.slice(0, 2800);
-  } else {
-    data.text = data.notes.length ? "" : text.slice(0, 1500);
+  // 笔记列表:用截到的 API(带 token),拼完整链接
+  const seen = new Set();
+  const notes = [];
+  for (const n of apiItems) {
+    if (seen.has(n.id)) continue;
+    seen.add(n.id);
+    notes.push({
+      title: n.title || "(无题)",
+      author: n.author,
+      likes: n.likes,
+      comments: n.comments,
+      url: "https://www.xiaohongshu.com/explore/" + n.id + "?xsec_token=" + encodeURIComponent(n.token) + "&xsec_source=pc_search",
+    });
+    if (notes.length >= 15) break;
   }
 
-  const needLogin = /登录|扫码|手机号登录/.test(data.pageTitle) || /当前笔记暂时无法浏览/.test(data.text)
-    || (data.text.length < 60 && data.notes.length === 0 && !data.desc);
-  console.error("[go] ←", JSON.stringify(data.pageTitle), "| 笔记", data.notes.length, "条 | 正文", data.text.length, "字", needLogin ? "(疑似没登录)" : "");
-  return { ok: true, url: curUrl, need_login: needLogin, ...data };
+  let curUrl = url;
+  try { curUrl = page.url(); } catch {}
+  const isNote = /\/(explore|discovery\/item)\/[0-9a-fA-F]{8,}/.test(curUrl);
+  let text = cleanText(meta.text);
+  let outNotes = notes;
+  if (isNote) {
+    const idx = text.search(/共\s*[\d.万]+\s*条评论/);
+    if (idx >= 0) text = text.slice(idx);     // 详情页:从"共N条评论"起 = 只留评论
+    text = text.slice(0, 2800);
+    outNotes = notes.slice(0, 5);             // 详情页:相关笔记留几条
+  } else {
+    text = outNotes.length ? "" : text.slice(0, 1500);   // 列表页:有清单就不发正文
+  }
+
+  const needLogin = /登录|扫码|手机号登录/.test(meta.pageTitle) || /当前笔记暂时无法浏览/.test(meta.text)
+    || (text.length < 60 && outNotes.length === 0 && !meta.desc);
+  console.error("[go] ←", JSON.stringify(meta.pageTitle), "| 笔记", outNotes.length, "条 | 正文", text.length, "字", needLogin ? "(疑似没登录)" : "");
+  return {
+    ok: true, url: curUrl, need_login: needLogin,
+    pageTitle: meta.pageTitle, ogTitle: meta.ogTitle, desc: meta.desc,
+    notes: outNotes, text,
+  };
 }
 
 function send(res, code, obj) {
@@ -165,41 +172,11 @@ function send(res, code, obj) {
 
 async function handleGo(res, url) {
   try {
-    const data = await locked(() => withTimeout(go(url), 50000, "整次读取"));
+    const data = await locked(() => withTimeout(go(url), 55000, "整次读取"));
     if (!data) return send(res, 500, { ok: false, error: "内部异常:读取没返回结果" });
     return send(res, 200, data);
   } catch (e) {
     console.error("[handleGo] 报错:", e && e.stack ? e.stack : e);
-    return send(res, 500, { ok: false, error: String(e && e.message ? e.message : e) });
-  }
-}
-
-// 诊断 v2:搜一下,截住小红书带 xsec 的 API 返回,dump 出 URL + 结构片段,好对症写链接提取
-async function handleDebug(res) {
-  try {
-    const out = await locked(() => withTimeout((async () => {
-      await ensure();
-      const caps = [];
-      const onResp = async (resp) => {
-        try {
-          const url = resp.url();
-          if (!/xiaohongshu\.com\/api\//.test(url)) return;
-          const ct = resp.headers()["content-type"] || "";
-          if (!/json/.test(ct)) return;
-          const txt = await resp.text();
-          if (/xsec/i.test(txt)) caps.push({ url, snippet: txt.slice(0, 1600) });
-        } catch {}
-      };
-      page.on("response", onResp);
-      try {
-        await page.goto("https://www.xiaohongshu.com/search_result?keyword=美食", { waitUntil: "domcontentloaded", timeout: 25000 });
-      } catch {}
-      await page.waitForTimeout(5500);
-      page.off("response", onResp);
-      return { hit_apis: caps.length, apis: caps.slice(0, 3) };
-    })(), 45000, "debug"));
-    return send(res, 200, { ok: true, ...out });
-  } catch (e) {
     return send(res, 500, { ok: false, error: String(e && e.message ? e.message : e) });
   }
 }
@@ -210,7 +187,6 @@ const server = http.createServer((req, res) => {
   if (TOKEN && u.searchParams.get("token") !== TOKEN) return send(res, 401, { ok: false, error: "bad token" });
 
   if (u.pathname === "/health") return send(res, 200, { ok: true, v: VERSION });
-  if (u.pathname === "/debug") return handleDebug(res);
   if (u.pathname === "/search") {
     const q = u.searchParams.get("q") || "";
     return handleGo(res, "https://www.xiaohongshu.com/search_result?keyword=" + encodeURIComponent(q));

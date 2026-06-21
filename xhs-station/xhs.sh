@@ -55,7 +55,7 @@ notes = d.get("notes") or []
 if notes:
     print("【可点开的笔记】(想看哪条,就 xhs go <它的链接>)")
     for n in notes[:15]:
-        bits = [b for b in [n.get("author","").strip(), (n.get("likes","").strip()+"赞" if n.get("likes","").strip() else "")] if b]
+        bits = [b for b in [n.get("author","").strip(), (n.get("likes","").strip()+"赞" if n.get("likes","").strip() else ""), (n.get("comments","").strip()+"评" if n.get("comments","").strip() else "")] if b]
         meta = ("  (" + " · ".join(bits) + ")") if bits else ""
         print("• %s%s\n    %s" % (n.get("title","(无题)"), meta, n.get("url","")))
     print()
