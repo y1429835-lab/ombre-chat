@@ -20,11 +20,25 @@ BASE="http://${IP}:${PORT}"
 enc() { python3 -c "import urllib.parse,sys; print(urllib.parse.quote(' '.join(sys.argv[1:])))" "$@"; }
 
 cmd="${1:-}"; shift || true
+
+# 截图:把笔记截成 PNG 存到 VPS,暮声再用 Read 看图里的内容(食谱/清单/步骤)
+if [ "$cmd" = "shot" ]; then
+  url="${1:-}"
+  out="${XHS_SHOT_OUT:-$HOME/xhs-shot.png}"
+  code="$(curl -s --max-time 80 -o "$out" -w '%{http_code}' "${BASE}/shot?token=${TOKEN}&url=$(enc "$url")" || echo 000)"
+  if [ "$code" = "200" ] && [ -s "$out" ]; then
+    echo "已把这条笔记截图存到 ${out}。下一步:用 Read 工具打开 ${out},图里的内容就能识别了。"
+  else
+    echo "（截图没拿到 code=${code}——确认 Mac 工位+通道开着、url 用引号包起来。）"
+  fi
+  exit 0
+fi
+
 case "$cmd" in
   search) path="/search?token=${TOKEN}&q=$(enc "$@")" ;;
   go|open) path="/go?token=${TOKEN}&url=$(enc "$@")" ;;
   home)   path="/home?token=${TOKEN}" ;;
-  *) echo "用法: xhs search 关键词 | xhs go URL | xhs home" >&2; exit 1 ;;
+  *) echo "用法: xhs search 关键词 | xhs go URL | xhs shot URL | xhs home" >&2; exit 1 ;;
 esac
 
 # 工位有时没开(桃枝没开电脑)——超时就温和报一声,别卡住暮声

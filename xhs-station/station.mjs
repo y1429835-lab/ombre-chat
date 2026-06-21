@@ -181,12 +181,33 @@ async function handleGo(res, url) {
   }
 }
 
+// 截图:导航到笔记,截一张 PNG 直接回二进制(给暮声 Read 看图里的内容)
+async function handleShot(res, url) {
+  try {
+    const buf = await locked(() => withTimeout((async () => {
+      await ensure();
+      try { await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 }); } catch {}
+      await page.waitForTimeout(2800);
+      return await page.screenshot({ type: "png" });
+    })(), 45000, "截图"));
+    res.writeHead(200, { "Content-Type": "image/png" });
+    res.end(buf);
+  } catch (e) {
+    return send(res, 500, { ok: false, error: String(e && e.message ? e.message : e) });
+  }
+}
+
 const server = http.createServer((req, res) => {
   let u;
   try { u = new URL(req.url, "http://x"); } catch { return send(res, 400, { ok: false, error: "bad url" }); }
   if (TOKEN && u.searchParams.get("token") !== TOKEN) return send(res, 401, { ok: false, error: "bad token" });
 
   if (u.pathname === "/health") return send(res, 200, { ok: true, v: VERSION });
+  if (u.pathname === "/shot") {
+    const url = u.searchParams.get("url") || "";
+    if (!/^https?:\/\//.test(url)) return send(res, 400, { ok: false, error: "url 要带 http(s)://" });
+    return handleShot(res, url);
+  }
   if (u.pathname === "/search") {
     const q = u.searchParams.get("q") || "";
     return handleGo(res, "https://www.xiaohongshu.com/search_result?keyword=" + encodeURIComponent(q));
