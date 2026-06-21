@@ -174,19 +174,29 @@ async function handleGo(res, url) {
   }
 }
 
-// 诊断:搜一下,把 __INITIAL_STATE__ 里 xsecToken 附近的结构 dump 出来,好对症修挖链接的逻辑
+// 诊断 v2:搜一下,截住小红书带 xsec 的 API 返回,dump 出 URL + 结构片段,好对症写链接提取
 async function handleDebug(res) {
   try {
     const out = await locked(() => withTimeout((async () => {
       await ensure();
-      try { await page.goto("https://www.xiaohongshu.com/search_result?keyword=美食", { waitUntil: "domcontentloaded", timeout: 25000 }); } catch {}
-      await page.waitForTimeout(3500);
-      return await page.evaluate(() => {
-        const st = window.__INITIAL_STATE__ || {};
-        let s = ""; try { s = JSON.stringify(st); } catch (e) { s = ""; }
-        const i = s.search(/xsec/i);
-        return { keys: Object.keys(st), len: s.length, hasXsec: i >= 0, around: i >= 0 ? s.slice(Math.max(0, i - 700), i + 500) : s.slice(0, 1200) };
-      });
+      const caps = [];
+      const onResp = async (resp) => {
+        try {
+          const url = resp.url();
+          if (!/xiaohongshu\.com\/api\//.test(url)) return;
+          const ct = resp.headers()["content-type"] || "";
+          if (!/json/.test(ct)) return;
+          const txt = await resp.text();
+          if (/xsec/i.test(txt)) caps.push({ url, snippet: txt.slice(0, 1600) });
+        } catch {}
+      };
+      page.on("response", onResp);
+      try {
+        await page.goto("https://www.xiaohongshu.com/search_result?keyword=美食", { waitUntil: "domcontentloaded", timeout: 25000 });
+      } catch {}
+      await page.waitForTimeout(5500);
+      page.off("response", onResp);
+      return { hit_apis: caps.length, apis: caps.slice(0, 3) };
     })(), 45000, "debug"));
     return send(res, 200, { ok: true, ...out });
   } catch (e) {
