@@ -21,6 +21,9 @@ import websockets
 from mcp.server.fastmcp import FastMCP
 
 URL_FILE = os.path.expanduser("~/musheng/.bridge/intiface_url.txt")
+# 蓝牙玩具有接收速度上限:每段太短会被吞掉(发得比它能咽下去的快)。给每段托底,保证每一下都真震到。
+# 还吞就把这个调大(0.25 / 0.3 秒),改环境变量 TOY_MIN_STEP,不用改代码。
+MIN_STEP = float(os.environ.get("TOY_MIN_STEP", "0.2"))
 
 mcp = FastMCP("toy")
 
@@ -159,7 +162,7 @@ async def _run_pattern(name, steps):
     for step in (steps or []):
         try:
             inten = max(0.0, min(1.0, float(step[0])))
-            sec = max(0.0, min(float(step[1]), 30.0))
+            sec = max(MIN_STEP, min(float(step[1]), 30.0))   # 托底到 MIN_STEP,别让蓝牙吞掉这一下
         except Exception:
             continue
         if total + sec > 180.0:
@@ -222,6 +225,8 @@ async def stop(which: str = "all") -> str:
 @mcp.tool()
 async def vibrate_pattern(steps: list, which: str = "all") -> str:
     """按你编的节奏震。steps = [[强度0~1, 秒], ...] 一段段播放,播完自动停。单段≤30秒、整段≤180秒。
+    注意:每段会自动托底到约 0.2 秒——蓝牙玩具接收有上限,比这更短的脉冲会被吞掉。所以想要"快"的脉冲,
+    每段别低于 0.2 秒(0.2~0.3 最稳),这样你定几下就真震几下,一下不丢。
     which 同 vibrate:all=所有玩具一起按这个节奏;序号/名字=只让那一个玩这节奏。
     想让两个玩具同时玩『不同』节奏?分别调两次、各填各的 which 和 steps,它们各自后台走、互不打架。"""
     try:
