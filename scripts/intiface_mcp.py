@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-玩具 MCP —— 给暮声 vibrate / stop / vibrate_pattern,经 Tailscale 连 Intiface 控 Jive。
+玩具 MCP（多设备版）—— 给暮声 list_toys / vibrate / stop / vibrate_pattern,经 Tailscale 连 Intiface。
 
-关键:攥住『一条长连接』+ keepalive,不每条指令开关。
-原因:Intiface 在客户端断开时会停所有设备,所以持续震动必须保持连接。
-链路:暮声(VPS) → 这个 MCP(长连接) → ws://<设备 Tailscale IP>:12345 → 蓝牙 → Jive
+升级:不再只抓"第一个玩具"。Intiface 连着几个,暮声都能看见、都能控——
+  · which="all"  → 所有玩具一起;
+  · which=序号    → 只控那一个(list_toys 看序号);
+  · which=名字片段 → 按名字挑;
+  · 还能给不同玩具同时下不同强度/不同节奏(各自后台跑,互不打架)。
+
+一条长连接 + keepalive,持续震也不掉;断了自动重连。
+链路:暮声(VPS) → 这个 MCP(长连接) → ws://<设备 Tailscale IP>:12345 → 蓝牙 → 玩具们
 依赖:  ~/wcbot/bin/pip install mcp websockets
 """
 import asyncio
@@ -19,9 +24,9 @@ URL_FILE = os.path.expanduser("~/musheng/.bridge/intiface_url.txt")
 
 mcp = FastMCP("toy")
 
-_conn = {"ws": None, "idx": None}     # 共享的那一条长连接
+_conn = {"ws": None, "devices": []}    # devices: [{"idx":int, "name":str}]
 _lock = asyncio.Lock()
-_action = {"task": None}              # 当前在后台跑的定时/节奏动作(能被打断)
+_actions = {}                          # 设备名 -> 正在后台跑的定时/节奏任务(按名字管,重连也认得)
 
 
 def _url():
@@ -43,7 +48,7 @@ def _pick_devices(msgs):
 
 
 async def _reader(ws):
-    """后台把进来的消息排空,维持连接健康(ping/pong + 事件)。连接断了就清掉状态。"""
+    """后台排空消息,维持连接健康;断了清状态。"""
     try:
         async for _ in ws:
             pass
@@ -51,14 +56,14 @@ async def _reader(ws):
         pass
     if _conn["ws"] is ws:
         _conn["ws"] = None
-        _conn["idx"] = None
+        _conn["devices"] = []
 
 
 async def _connect():
-    """新建长连接:握手 + 取设备(没设备就扫),起后台 reader。返回 (ws, idx)。"""
+    """新建长连接:握手 + 取『所有』设备(没有就扫),起后台 reader。"""
     ws = await websockets.connect(
         _url(), open_timeout=10, close_timeout=5,
-        ping_interval=15, ping_timeout=20,    # keepalive,别让连接被判死
+        ping_interval=15, ping_timeout=20,
     )
     await ws.send(json.dumps([{"RequestServerInfo": {"Id": 1, "ClientName": "musheng", "MessageVersion": 3}}]))
     await ws.recv()
@@ -71,38 +76,59 @@ async def _connect():
         devices = _pick_devices(json.loads(await ws.recv()))
     if not devices:
         await ws.close()
-        raise RuntimeError("没找到玩具(确认 iPad 上 Intiface 前台、引擎 running、Jive 连着)")
-    idx = devices[0].get("DeviceIndex", 0)
+        raise RuntimeError("Intiface 上没连着玩具(确认前台、引擎 running、玩具都连上了)")
     _conn["ws"] = ws
-    _conn["idx"] = idx
-    asyncio.create_task(_reader(ws))    # 起排空任务,握手 recv 已做完
-    return ws, idx
+    _conn["devices"] = [{"idx": d.get("DeviceIndex", 0), "name": d.get("DeviceName", "玩具")} for d in devices]
+    asyncio.create_task(_reader(ws))
+    return ws
 
 
 async def _ensure():
     if _conn["ws"] is not None:
-        return _conn["ws"], _conn["idx"]
+        return _conn["ws"]
     return await _connect()
 
 
-async def _set(value):
-    """在长连接上设震动强度;连接坏了自动重连一次。"""
+def _resolve(which):
+    """把 which 解析成要控的设备列表。all/空=全部;数字=序号;字符串=名字片段。"""
+    devs = _conn["devices"]
+    if which is None or str(which).lower() in ("all", "", "全部"):
+        return list(devs)
+    try:
+        i = int(which)
+        return [devs[i]] if 0 <= i < len(devs) else []
+    except (ValueError, TypeError):
+        pass
+    w = str(which).lower()
+    return [d for d in devs if w in d["name"].lower()]
+
+
+async def _ensure_devices(which):
+    """连上 + 解析出要控的设备(拿名字给回复/管后台任务用)。"""
+    async with _lock:
+        await _ensure()
+        return _resolve(which)
+
+
+async def _set(value, which):
+    """给 which 选中的玩具设强度;连接坏了自动重连一次。"""
     value = max(0.0, min(1.0, float(value)))
     async with _lock:
         last = None
-        for attempt in (1, 2):
+        for _ in (1, 2):
             try:
-                ws, idx = await _ensure()
-                await ws.send(json.dumps([{
-                    "ScalarCmd": {"Id": 9, "DeviceIndex": idx,
-                                  "Scalars": [{"Index": 0, "Scalar": value, "ActuatorType": "Vibrate"}]},
-                }]))
+                ws = await _ensure()
+                for d in _resolve(which):
+                    await ws.send(json.dumps([{
+                        "ScalarCmd": {"Id": 9, "DeviceIndex": d["idx"],
+                                      "Scalars": [{"Index": 0, "Scalar": value, "ActuatorType": "Vibrate"}]},
+                    }]))
                 return
             except Exception as e:
                 last = e
                 w = _conn["ws"]
                 _conn["ws"] = None
-                _conn["idx"] = None
+                _conn["devices"] = []
                 if w:
                     try:
                         await w.close()
@@ -111,10 +137,9 @@ async def _set(value):
         raise last
 
 
-async def _cancel_action():
-    """打断当前在后台跑的定时/节奏动作(不负责归零,归零交给调用方明确决定)。"""
-    t = _action["task"]
-    _action["task"] = None
+async def _cancel(name):
+    """打断某个玩具正在跑的定时/节奏(不归零,归零交给调用方)。"""
+    t = _actions.pop(name, None)
     if t and not t.done():
         t.cancel()
         try:
@@ -123,15 +148,13 @@ async def _cancel_action():
             pass
 
 
-async def _run_timed(value, seconds):
-    """后台:设强度,过 seconds 秒自然归零。被打断(cancel)则不归零——交给打断者。"""
-    await _set(value)
+async def _run_timed(name, value, seconds):
+    await _set(value, name)
     await asyncio.sleep(min(float(seconds), 120.0))
-    await _set(0.0)
+    await _set(0.0, name)
 
 
-async def _run_pattern(steps):
-    """后台:一段段播节奏,自然播完归零。被打断则不归零——交给打断者。"""
+async def _run_pattern(name, steps):
     total = 0.0
     for step in (steps or []):
         try:
@@ -141,47 +164,78 @@ async def _run_pattern(steps):
             continue
         if total + sec > 180.0:
             break
-        await _set(inten)
+        await _set(inten, name)
         await asyncio.sleep(sec)
         total += sec
-    await _set(0.0)
+    await _set(0.0, name)
 
 
 @mcp.tool()
-async def vibrate(intensity: float, seconds: float = 0) -> str:
-    """让桃枝的玩具震动。intensity 0~1(强度,0.3 轻、0.7 中、1.0 满)。seconds 留 0 = 一直震着(直到你改强度或 stop);给秒数 = 震这么久自动停(上限 120 秒)。带秒数也会『立刻返回』,后台自己计时,你能接着跟桃枝说话——随时再 vibrate 改强度或 stop 都能打断它。"""
+async def list_toys() -> str:
+    """看 Intiface 现在连着哪些玩具(带序号)。要单独控某一个之前,先用这个看序号。"""
     try:
-        await _cancel_action()                     # 先打断上一个还在跑的定时/节奏
-        if seconds and seconds > 0:
-            _action["task"] = asyncio.create_task(_run_timed(intensity, seconds))
-            return f"震到 {intensity:.0%},{float(seconds):g} 秒后自动停（后台计时,你能接着聊）。"
-        await _set(intensity)
-        return f"震到 {intensity:.0%}(持续着,记得用 stop 或改强度)。"
+        await _ensure_devices("all")
+        devs = _conn["devices"]
+        if not devs:
+            return "Intiface 上没连着玩具。"
+        return "连着的玩具(序号用来单独控):\n" + "\n".join(f"  {i}: {d['name']}" for i, d in enumerate(devs))
     except Exception as e:
-        return f"震动没成:{e!r}（多半是 iPad Intiface 没前台/没运行,或 Tailscale 断了）"
+        return f"读不到玩具:{e!r}（确认 iPad 上 Intiface 前台、引擎 running、玩具连着）"
 
 
 @mcp.tool()
-async def stop() -> str:
-    """立刻停止玩具震动(强度归零,打断任何后台节奏/定时,长连接仍保留)。"""
+async def vibrate(intensity: float, seconds: float = 0, which: str = "all") -> str:
+    """让桃枝的玩具震。intensity 0~1(0.3 轻、0.7 中、1.0 满)。
+    which:『all』=所有连着的一起；填序号(如 0、1,先 list_toys 看)=只控那一个；也可填名字片段。
+    seconds=0 = 一直震着(直到你改强度或 stop)；给秒数 = 震这么久自动停(上限120,后台计时,你能接着聊)。
+    想给两个玩具不同强度?分别调两次、各填各的 which 就行。"""
     try:
-        await _cancel_action()
-        await _set(0.0)
-        return "停了。"
+        devs = await _ensure_devices(which)
+        if not devs:
+            return "没找到那个玩具(先 list_toys 看看连了哪些、序号多少)。"
+        names = [d["name"] for d in devs]
+        for n in names:
+            await _cancel(n)
+        if seconds and seconds > 0:
+            for n in names:
+                _actions[n] = asyncio.create_task(_run_timed(n, intensity, seconds))
+            return f"{'、'.join(names)} 震到 {intensity:.0%},{float(seconds):g} 秒后自动停(后台计时,你能接着聊)。"
+        await _set(intensity, which)
+        return f"{'、'.join(names)} 震到 {intensity:.0%}(持续着,记得 stop 或改强度)。"
+    except Exception as e:
+        return f"震动没成:{e!r}（多半是 Intiface 没前台/没运行,或 Tailscale 断了）"
+
+
+@mcp.tool()
+async def stop(which: str = "all") -> str:
+    """停止震动(强度归零)。which 同 vibrate:all=全停;序号/名字=只停那一个。长连接仍保留。"""
+    try:
+        devs = await _ensure_devices(which)
+        for d in devs:
+            await _cancel(d["name"])
+        await _set(0.0, which)
+        return f"{('、'.join(d['name'] for d in devs)) or '玩具'} 停了。"
     except Exception as e:
         return f"停止没成:{e!r}"
 
 
 @mcp.tool()
-async def vibrate_pattern(steps: list) -> str:
-    """按你自己编的节奏震。steps = [[强度0~1, 秒], ...] 一段段播放(脉冲/波浪/渐强/随心),播完自动停。单段≤30秒、整段≤180秒。这条也『立刻返回』,节奏在后台走,你能一边播一边跟桃枝聊,随时 stop 或新指令打断。例:脉冲 [[0.8,0.4],[0.1,0.4],[0.8,0.4],[0.1,0.4]];渐强 [[0.2,1],[0.5,1],[0.8,1],[1.0,2]]。"""
+async def vibrate_pattern(steps: list, which: str = "all") -> str:
+    """按你编的节奏震。steps = [[强度0~1, 秒], ...] 一段段播放,播完自动停。单段≤30秒、整段≤180秒。
+    which 同 vibrate:all=所有玩具一起按这个节奏;序号/名字=只让那一个玩这节奏。
+    想让两个玩具同时玩『不同』节奏?分别调两次、各填各的 which 和 steps,它们各自后台走、互不打架。"""
     try:
-        await _cancel_action()
+        devs = await _ensure_devices(which)
+        if not devs:
+            return "没找到玩具(先 list_toys 看看连了哪些)。"
         n = sum(1 for s in (steps or []) if isinstance(s, (list, tuple)) and len(s) >= 2)
         if n == 0:
-            return "节奏是空的（要 [[强度,秒],...]）。"
-        _action["task"] = asyncio.create_task(_run_pattern(steps))
-        return f"节奏开始播了（{n} 段,后台走,你能一边播一边聊;stop 可随时打断）。"
+            return "节奏是空的(要 [[强度,秒],...])。"
+        names = [d["name"] for d in devs]
+        for nm in names:
+            await _cancel(nm)
+            _actions[nm] = asyncio.create_task(_run_pattern(nm, steps))
+        return f"{'、'.join(names)} 开始按节奏震({n} 段,后台走,可随时 stop 打断)。"
     except Exception as e:
         return f"节奏没成:{e!r}"
 
