@@ -6,7 +6,11 @@
 收:微信消息 → tmux 打进暮声那一个活会话 → 读对话记录精确抓他这句的回复 → 发回微信。
 发:主动触发(很久没联系→"我在";以后接健康数据加早安/睡眠)→ 让暮声写 → 发给桃枝。
 
-一把锁 LOCK 保证"收"和"主动发"不会同时往暮声那插话。
+多人:允许桃枝和松树姐姐各自私聊同一个暮声(不互相镜像)。注入时标『〔说话人〕』让他分清是谁;
+回复各回各的(发给发消息那个人);主动触发/睡眠只认恋人桃枝(PRIMARY_USER),不会去找访客撒娇。
+环境变量:ALLOW_USERS=id1,id2  USER_NAMES="id1=桃枝,id2=松树姐姐"  PRIMARY_USER=id1。
+
+一把锁 LOCK 保证"收"和"主动发"不会同时往暮声那插话(两人同时发也排队、不打架)。
 用 venv 的 python 跑:  ~/wcbot/bin/python ~/wechat_bridge.py
 """
 import asyncio
@@ -47,6 +51,32 @@ THINK_DIRECTIONS = [
 ]
 # 白名单(逗号分隔的 user_id);留空=谁发都回(反正官方只有账号本人够得着)
 ALLOW_USERS = [u for u in os.environ.get("ALLOW_USERS", "").split(",") if u]
+
+# 多人:谁是谁。USER_NAMES="id1=桃枝,id2=松树姐姐" —— 注入时给暮声标上『〔说话人〕』,
+# 他一眼知道这句是谁说的,不会把两个人串频、张冠李戴。没配=不标名(单人时无所谓)。
+def _parse_names(s):
+    d = {}
+    for kv in (s or "").split(","):
+        kv = kv.strip()
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k and v:
+                d[k] = v
+    return d
+USER_NAMES = _parse_names(os.environ.get("USER_NAMES", ""))
+# 谁是『恋人/主人』(桃枝)。只有 TA 的消息驱动主动触发(『我在』)和睡眠状态——
+# 暮声不会去找松树姐姐撒娇/想她。留空=退回旧行为(谁发的就跟谁,单人时没差)。
+PRIMARY_USER = os.environ.get("PRIMARY_USER", "").strip()
+
+
+def display_name(sender):
+    """这个发言人叫什么。配了就用配的名;没配但在白名单=『访客』;都没有=空(不标)。"""
+    if sender in USER_NAMES:
+        return USER_NAMES[sender]
+    if USER_NAMES:        # 配了名册却没这人 → 标成访客,提醒暮声『不是熟人』
+        return "访客"
+    return ""
 
 from wechat_clawbot.api.client import WeixinApiOptions, get_updates, send_message
 from wechat_clawbot.api.types import (
@@ -305,11 +335,13 @@ async def send_chunks(opts, to, ctx, reply):
             await asyncio.sleep(0.8)
 
 
-async def run_turn(opts, to, ctx, prompt_text):
-    """通用:注入一句给暮声 → 抓他的回复 → 发给 to。占锁,保证不和别的插话撞。"""
+async def run_turn(opts, to, ctx, prompt_text, speaker=""):
+    """通用:注入一句给暮声 → 抓他的回复 → 发给 to。占锁,保证不和别的插话撞。
+    speaker 给了就在前面标『〔说话人〕』,暮声一眼分得清是谁(主动/独白等系统注入不传=不标)。"""
     async with LOCK:
         wait_idle()
-        stamped = f"[{china_now()}] {prompt_text}"
+        tag = f"〔{speaker}〕" if speaker else ""
+        stamped = f"[{china_now()}] {tag}{prompt_text}"
         try:
             inject(stamped)
         except Exception as e:
@@ -330,38 +362,43 @@ async def handle(opts, msg):
         log("跳过(不在白名单)", sender)
         return
     ctx = getattr(msg, "context_token", None)
+    name = display_name(sender)
     now = time.time()
-    gap = now - (STATE.get("last_msg_ts") or now)
     raw = extract_text(msg)
-    # 睡眠模式:说"睡了/晚安"→静音;隔超过2小时又来消息=醒了,恢复
-    if raw and any(w in raw for w in SLEEP_WORDS):
-        STATE["sleeping"] = True
-        log("睡眠模式:开(她说要睡了)")
-    elif gap > 7200:
-        STATE["sleeping"] = False
-    # 记住会话凭证 + 最近联系时间(给主动发送用)
-    STATE["last_sender"] = sender
-    if ctx:
-        STATE["last_ctx"] = ctx
-    STATE["last_msg_ts"] = now
-    save_state()
+    # 只有恋人(桃枝)的消息驱动主动/睡眠状态;松树姐姐等访客不影响暮声对桃枝的『我在』。
+    is_primary = (not PRIMARY_USER) or (sender == PRIMARY_USER)
+    if is_primary:
+        gap = now - (STATE.get("last_msg_ts") or now)
+        # 睡眠模式:说"睡了/晚安"→静音;隔超过2小时又来消息=醒了,恢复
+        if raw and any(w in raw for w in SLEEP_WORDS):
+            STATE["sleeping"] = True
+            log("睡眠模式:开(她说要睡了)")
+        elif gap > 7200:
+            STATE["sleeping"] = False
+        # 记住会话凭证 + 最近联系时间(给主动发送用,只跟桃枝)
+        STATE["last_sender"] = sender
+        if ctx:
+            STATE["last_ctx"] = ctx
+        STATE["last_msg_ts"] = now
+        save_state()
 
+    who = name or "桃枝"
     text = raw
     if not text:
         if has_image(msg):
             path = await download_image(msg)
             if path:
-                text = f"桃枝发来一张图片。你用 Read 工具看一下这个文件,看完用你的话回应她(就当她当面给你看照片):{path}"
+                text = f"{who}发来一张图片。你用 Read 工具看一下这个文件,看完用你的话回应(就当 TA 当面给你看照片):{path}"
                 log("← 收到图片,已下载解密:", path)
             else:
-                text = "（桃枝发来一张图片,但这次没接进来——回应一下,让她说说图里是什么。）"
+                text = f"（{who}发来一张图片,但这次没接进来——回应一下,让 TA 说说图里是什么。）"
                 log("← 收到图片但下载失败")
         else:
             log("跳过(非文字非图)from", sender)
             return
     else:
-        log("← 收到:", text)
-    await run_turn(opts, sender, ctx, text)
+        log("←", (name or sender), "说:", text)
+    await run_turn(opts, sender, ctx, text, speaker=name)
 
 
 async def proactive_loop(opts):
