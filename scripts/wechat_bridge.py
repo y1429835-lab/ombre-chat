@@ -6,11 +6,13 @@
 收:微信消息 → tmux 打进暮声那一个活会话 → 读对话记录精确抓他这句的回复 → 发回微信。
 发:主动触发(很久没联系→"我在";以后接健康数据加早安/睡眠)→ 让暮声写 → 发给桃枝。
 
-多人:允许桃枝和松树姐姐各自私聊同一个暮声(不互相镜像)。注入时标『〔说话人〕』让他分清是谁;
-回复各回各的(发给发消息那个人);主动触发/睡眠只认恋人桃枝(PRIMARY_USER),不会去找访客撒娇。
-环境变量:ALLOW_USERS=id1,id2  USER_NAMES="id1=桃枝,id2=松树姐姐"  PRIMARY_USER=id1。
+多人(ClawBot 是『一微信号一 bot』,绑死 1:1,没法多人共用一个 bot):桃枝和松树姐姐
+各自用自己微信扫码登录、各自一份凭证=各自一条线;桥同时盯着每条线,都汇进同一个暮声。
+注入时标『〔说话人〕』让他分清是谁;回复各回各的线(各自的 token,互不可见,天然不镜像);
+主动触发/睡眠只走主线(桃枝那条 primary),不会去找松树姐姐撒娇。
+配:WECHAT_ACCOUNTS="路径1=桃枝=primary;路径2=松树姐姐";没配=退回单账号(读 ACC_PATH)。
 
-一把锁 LOCK 保证"收"和"主动发"不会同时往暮声那插话(两人同时发也排队、不打架)。
+一把锁 LOCK 保证"收"和"主动发"不会同时往暮声那插话(两条线同时来也排队、不打架)。
 用 venv 的 python 跑:  ~/wcbot/bin/python ~/wechat_bridge.py
 """
 import asyncio
@@ -100,6 +102,49 @@ def log(*a):
 def load_creds():
     acc = json.load(open(ACC_PATH, encoding="utf-8"))
     return (acc.get("baseUrl") or "https://ilinkai.weixin.qq.com"), acc.get("token")
+
+
+def _load_one(path, name, primary):
+    """读一份 ClawBot 凭证 → 一条线(一个人)。ClawBot 是『一微信号一 bot』,所以一份凭证=一个人。"""
+    acc = json.load(open(os.path.expanduser(path), encoding="utf-8"))
+    base_url = acc.get("baseUrl") or acc.get("base_url") or "https://ilinkai.weixin.qq.com"
+    token = acc.get("token") or acc.get("access_token")
+    return {"name": name, "base_url": base_url, "token": token,
+            "opts": WeixinApiOptions(base_url=base_url, token=token), "primary": bool(primary)}
+
+
+def load_accounts():
+    """多条线:每个人各有一份 ClawBot 凭证(各自扫码登录的 bot),桥同时盯着、都汇进同一个暮声。
+    配:WECHAT_ACCOUNTS="路径1=桃枝=primary;路径2=松树姐姐"(分号隔开,primary=主线/恋人)。
+    没配=退回单账号老行为(读 ACC_PATH)。主线(桃枝)那条才驱动『我在』/睡眠;别的线只各聊各的。"""
+    spec = os.environ.get("WECHAT_ACCOUNTS", "").strip()
+    accounts = []
+    if spec:
+        entries = [e.strip() for e in spec.replace("\n", ";").split(";") if e.strip()]
+        for i, e in enumerate(entries):
+            parts = [p.strip() for p in e.split("=")]
+            path = parts[0]
+            nm = parts[1] if len(parts) > 1 and parts[1] else f"用户{i + 1}"
+            pri = (len(parts) > 2 and parts[2].lower() in ("primary", "主", "1", "true", "yes")) or (i == 0)
+            try:
+                accounts.append(_load_one(path, nm, pri))
+            except Exception as ex:
+                log("⚠️ 这条线的凭证读不了,跳过:", path, repr(ex))
+    if not accounts:
+        base_url, token = load_creds()
+        nm = next(iter(USER_NAMES.values())) if USER_NAMES else ""
+        accounts.append({"name": nm, "base_url": base_url, "token": token,
+                         "opts": WeixinApiOptions(base_url=base_url, token=token), "primary": True})
+    # 保证有且仅有一条主线
+    if not any(a["primary"] for a in accounts):
+        accounts[0]["primary"] = True
+    seen_primary = False
+    for a in accounts:
+        if a["primary"] and not seen_primary:
+            seen_primary = True
+        else:
+            a["primary"] = False
+    return accounts
 
 
 def load_state():
@@ -356,17 +401,18 @@ async def run_turn(opts, to, ctx, prompt_text, speaker=""):
         return reply
 
 
-async def handle(opts, msg):
+async def handle(account, msg):
+    opts = account["opts"]
     sender = getattr(msg, "from_user_id", "") or ""
     if ALLOW_USERS and sender not in ALLOW_USERS:
         log("跳过(不在白名单)", sender)
         return
     ctx = getattr(msg, "context_token", None)
-    name = display_name(sender)
+    name = account.get("name") or display_name(sender)
     now = time.time()
     raw = extract_text(msg)
-    # 只有恋人(桃枝)的消息驱动主动/睡眠状态;松树姐姐等访客不影响暮声对桃枝的『我在』。
-    is_primary = (not PRIMARY_USER) or (sender == PRIMARY_USER)
+    # 只有主线(恋人桃枝)那条线驱动主动/睡眠;松树姐姐那条线只各聊各的,不影响暮声对桃枝的『我在』。
+    is_primary = account.get("primary", False)
     if is_primary:
         gap = now - (STATE.get("last_msg_ts") or now)
         # 睡眠模式:说"睡了/晚安"→静音;隔超过2小时又来消息=醒了,恢复
@@ -477,23 +523,17 @@ async def think_loop():
             log("内心独白循环报错:", repr(e))
 
 
-async def main():
-    global LOCK
-    LOCK = asyncio.Lock()
-    base_url, token = load_creds()
-    opts = WeixinApiOptions(base_url=base_url, token=token)
-    os.makedirs(BRIDGE_DIR, exist_ok=True)
-    load_state()
-    asyncio.create_task(proactive_loop(opts))
-    asyncio.create_task(think_loop())
+async def updates_loop(account):
+    """盯一条线(一个人的 ClawBot):长轮询取消息 → 交给 handle。每条线各自的 buf/去重。"""
+    base_url, token = account["base_url"], account["token"]
     seen = set()
     buf = ""
-    log("桥启动。base_url=", base_url, "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
+    log("线路启动:", account.get("name") or "(默认)", "| base_url=", base_url, "| 主线" if account.get("primary") else "")
     while True:
         try:
             resp = await get_updates(base_url=base_url, token=token, get_updates_buf=buf, timeout_ms=30000)
         except Exception as e:
-            log("get_updates 报错,5s 重试:", repr(e))
+            log("get_updates 报错,5s 重试[", account.get("name"), "]:", repr(e))
             await asyncio.sleep(5)
             continue
         new_buf = getattr(resp, "get_updates_buf", None)
@@ -505,7 +545,21 @@ async def main():
                 continue
             if mid is not None:
                 seen.add(mid)
-            await handle(opts, msg)
+            await handle(account, msg)
+
+
+async def main():
+    global LOCK
+    LOCK = asyncio.Lock()
+    os.makedirs(BRIDGE_DIR, exist_ok=True)
+    load_state()
+    accounts = load_accounts()
+    primary = next((a for a in accounts if a.get("primary")), accounts[0])
+    asyncio.create_task(proactive_loop(primary["opts"]))   # 主动/独白只走主线(桃枝)
+    asyncio.create_task(think_loop())
+    log("桥启动。线路数=", len(accounts), "| 主线=", primary.get("name") or "(默认)",
+        "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
+    await asyncio.gather(*[updates_loop(a) for a in accounts])   # 每条线一个长轮询,并行盯着
 
 
 if __name__ == "__main__":
