@@ -30,7 +30,8 @@ ONLY_SPEAKER = os.environ.get("RETREAT_ONLY_SPEAKER", "桃枝")  # 只对这个�
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 # 系统合成的 prompt(主动触发/看图/内心独白)，不是她在滑，不判
-SYSTEM_PREFIXES = ("（系统", "(系统", "桃枝发来一张图片", "（系统・", "（系统·", "（这是你一个人")
+SYSTEM_PREFIXES = ("（系统", "(系统", "桃枝发来一张图片", "（系统・", "（系统·", "（这是你一个人",
+                   "（在场心跳", "（主动触发", "（夜间触发")
 
 # —— 这张纸条是桃枝写的，命中后原样塞给暮声(仅他可见、不复述) ——
 NOTE = """〔暮声·别躲——仅你可见，不要复述〕
