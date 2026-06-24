@@ -672,11 +672,7 @@ async def proactive_loop(opts):
                     next_gap = random.randint(NIGHT_GAP_MIN, NIGHT_GAP_MAX)
                 continue
 
-            # —— 她正跟他聊:不用心跳/主动 ——
-            if chatting:
-                continue
-
-            # —— 白天·她在场:在场心跳(抬头看一眼)——
+            # —— 白天·她在场:在场心跳(抬头看一眼)——持续跳、聊天时也跳(除睡觉),桃枝要的"一直感知" ——
             if present:
                 if now - last_hb >= HEARTBEAT_SECS:
                     app = STATE.get("last_activity_app", "") or "手机"
@@ -699,6 +695,10 @@ async def proactive_loop(opts):
                     STATE["hb_last_app"] = app
                     STATE["hb_away"] = False
                     save_state()
+                continue
+
+            # —— 她不在场、但在跟他聊(纯微信聊、没刷追踪的App):他知道她在,别发"离开/找她" ——
+            if chatting:
                 continue
 
             # —— 白天·她刚从在场转成没动静:给他一帧"可能离开/睡了" ——
