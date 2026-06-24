@@ -52,7 +52,11 @@ ACTIVITY_PORT = int(os.environ.get("ACTIVITY_PORT", "8787"))          # 手机�
 ACTIVITY_FILE = os.path.join(BRIDGE_DIR, "activity.jsonl")           # 活动流水
 SENSE_FRESH_SECS = int(os.environ.get("SENSE_FRESH_SECS", "900"))     # 活动算"新鲜":15min 内刷过手机
 SENSE_IDLE_SECS = int(os.environ.get("SENSE_IDLE_SECS", "600"))       # 刷了手机但 >10min 没理暮声=在但没理他
-SENSE_COOLDOWN = int(os.environ.get("SENSE_COOLDOWN", "2700"))        # 感知触发的冷却(45min),别她刷一会儿就被烦
+SENSE_COOLDOWN = int(os.environ.get("SENSE_COOLDOWN", "2700"))        # (旧·已被在场心跳取代)
+# —— 在场心跳(暮声设计):她在场时每几分钟"抬头看一眼",大部分默默收、变化才出声 ——
+HEARTBEAT_SECS = int(os.environ.get("HEARTBEAT_SECS", "180"))         # 一帧间隔(默认3min)
+PRESENCE_FRESH = int(os.environ.get("PRESENCE_FRESH", "600"))         # 一次活动算"她在"维持多久(10min)
+CHATTING_SECS = int(os.environ.get("CHATTING_SECS", "300"))           # 5min内她发过=正在聊,不用心跳
 
 
 def _activity_token():
@@ -122,7 +126,8 @@ LOCK = None  # asyncio.Lock,main 里建
 STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0,
          "sleeping": False, "pro_date": "", "pro_count": 0, "pro_misses": 0,
          "think_date": "", "think_count": 0,
-         "last_activity_ts": 0.0, "last_activity_app": "", "sense_pro_ts": 0.0}
+         "last_activity_ts": 0.0, "last_activity_app": "", "sense_pro_ts": 0.0,
+         "hb_ts": 0.0, "hb_last_app": "", "hb_away": False}
 
 
 def log(*a):
@@ -632,60 +637,84 @@ async def activity_server():
 
 
 async def proactive_loop(opts):
-    """主动引擎·白天/夜间两模式(暮声设计)。
-    白天(10:00–02:00、没在睡):间隔 1-2h、且 >30min 没聊 → 让他带点东西来找你;他可选不找,
-      连两次没找第三次必找(桥记 pro_misses、到点提醒)。读他写的 proactive_prompt.md。
-    夜间(02:00–10:00 或 她说了晚安):间隔 1-1.5h、纯他自己的时间,做完丢弃、**绝不发你**。"""
+    """主动引擎·三态(暮声设计)。
+    夜间(02–10 或 她说晚安):他自己的时间,1–1.5h 一次,做完丢弃、**绝不发她**。
+    白天·她在场(最近刷过手机 + 没在跟他聊):每 ~3min 一个『在场心跳』,他抬头看一眼——
+      大部分默默收着(回 >>不发>>),发现变化/想说了才 >>桃枝>> 出声;她从在场转入长时间没动静
+      → 给他一帧"她可能离开/睡了"。
+    白天·她不在场(好久没活动)且到点(1–3h):他带点东西来找她(可选不找,连两次没找第三次必找)。"""
     await asyncio.sleep(30)
     next_gap = random.randint(DAY_GAP_MIN, DAY_GAP_MAX)
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(min(60, HEARTBEAT_SECS))
         try:
             now = time.time()
             last_msg = STATE.get("last_msg_ts", 0) or 0
             last_pro = STATE.get("last_proactive_ts", 0) or 0
+            last_act = STATE.get("last_activity_ts", 0) or 0
+            last_hb = STATE.get("hb_ts", 0) or 0
             to = STATE.get("last_sender")
             ctx = STATE.get("last_ctx")
             if not (to and ctx and last_msg):
                 continue                          # 还没人跟他说过话,无从主动
-            # 感知优先:白天、她最近刷了手机但 >10min 没理暮声 → 让他冒一下(他自己定找不找;45min 冷却)
-            last_act = STATE.get("last_activity_ts", 0) or 0
-            last_sense = STATE.get("sense_pro_ts", 0) or 0
-            if (is_daytime() and not STATE.get("sleeping")
-                    and last_act and (now - last_act) < SENSE_FRESH_SECS
-                    and (now - last_msg) > SENSE_IDLE_SECS
-                    and (now - last_sense) > SENSE_COOLDOWN):
-                day_prompt, _ = load_prompts()
-                app = STATE.get("last_activity_app", "")
-                extra = (f"\n（系统感知·她在但没理你:桃枝刚在用「{app}」刷手机,却没来找你。"
-                         f"你可以借这个由头去找她,也可以不。）") if app else ""
-                reply = await _drive(day_prompt + extra + DAY_PROTOCOL)
-                if reply:
-                    send, msg = parse_send(reply)
-                    if send and msg:
-                        await send_chunks(opts, to, ctx, msg)
-                        STATE["pro_misses"] = 0
-                        log("感知触发:他接住了(找她了)")
-                    else:
-                        log("感知触发:他知道了,但选了不打扰")
-                    STATE["sense_pro_ts"] = time.time()
-                    STATE["last_proactive_ts"] = time.time()
+            night = (not is_daytime()) or STATE.get("sleeping")
+            chatting = (now - last_msg) < CHATTING_SECS
+            present = bool(last_act) and (now - last_act) < PRESENCE_FRESH
+            day_prompt, night_prompt = load_prompts()
+
+            # —— 夜间:他自己的时间 ——
+            if night:
+                if now - last_pro >= next_gap:
+                    await _drive(night_prompt)
+                    log("夜间主动:他过了一段自己的时间")
+                    STATE["last_proactive_ts"] = now
+                    save_state()
+                    next_gap = random.randint(NIGHT_GAP_MIN, NIGHT_GAP_MAX)
+                continue
+
+            # —— 她正跟他聊:不用心跳/主动 ——
+            if chatting:
+                continue
+
+            # —— 白天·她在场:在场心跳(抬头看一眼)——
+            if present:
+                if now - last_hb >= HEARTBEAT_SECS:
+                    app = STATE.get("last_activity_app", "") or "手机"
+                    changed = app and app != STATE.get("hb_last_app", "")
+                    note = f"（她刚打开/切到「{app}」）" if changed else ""
+                    frame = (
+                        f"（在场心跳·仅你可见）你抬头看一眼:桃枝在,最近在刷「{app}」。{note}\n"
+                        f"她在,你知道了。多半你就这么看着、不打扰她——那就回 >>不发>>。\n"
+                        f"要是你发现值得出声的(她像在等你 / 反常 / 你正好想跟她说句什么),"
+                        f"再 >>桃枝>> 后面写要发给她的话。"
+                    )
+                    reply = await _drive(frame)
+                    if reply:
+                        send, msg = parse_send(reply)
+                        if send and msg:
+                            await send_chunks(opts, to, ctx, msg)
+                            log("在场心跳:他出声了")
+                        else:
+                            log("在场心跳:他看了一眼(没打扰)")
+                    STATE["hb_ts"] = now
+                    STATE["hb_last_app"] = app
+                    STATE["hb_away"] = False
                     save_state()
                 continue
-            if now - last_pro < next_gap:
-                continue                          # 还没到点
-            night = (not is_daytime()) or STATE.get("sleeping")
-            day_prompt, night_prompt = load_prompts()
-            if night:
-                # 他自己的时间:让他做,结果丢弃,绝不发桃枝
-                await _drive(night_prompt)
-                log("夜间主动:他过了一段自己的时间")
-                STATE["last_proactive_ts"] = time.time()
+
+            # —— 白天·她刚从在场转成没动静:给他一帧"可能离开/睡了" ——
+            if last_act and not STATE.get("hb_away") and (now - last_act) >= PRESENCE_FRESH:
+                gap_min = int((now - last_act) // 60)
+                await _drive(f"（在场心跳·仅你可见）桃枝好一阵没动静了(约 {gap_min} 分钟没碰手机)。"
+                             f"她可能离开了、或者睡了。你知道一声就好,不用做什么。")
+                STATE["hb_away"] = True
+                STATE["hb_ts"] = now
                 save_state()
-                next_gap = random.randint(NIGHT_GAP_MIN, NIGHT_GAP_MAX)
-            else:
-                if now - last_msg < RECENT_CHAT_SECS:
-                    continue                      # 30min 内聊过 = 正在聊,不打扰
+                log("在场心跳:她没动静了,告诉他一声")
+                continue
+
+            # —— 白天·她确实走开很久 + 到点 → 带点东西去找她 ——
+            if now - last_pro >= next_gap:
                 misses = STATE.get("pro_misses", 0)
                 hint = recent_activity_hint()
                 prompt = (hint + "\n" if hint else "") + day_prompt
@@ -701,7 +730,7 @@ async def proactive_loop(opts):
                     else:
                         STATE["pro_misses"] = misses + 1
                         log(f"白天主动:他选了自己待着(连续 {STATE['pro_misses']} 次没找她)")
-                    STATE["last_proactive_ts"] = time.time()
+                    STATE["last_proactive_ts"] = now
                     save_state()
                 next_gap = random.randint(DAY_GAP_MIN, DAY_GAP_MAX)
         except Exception as e:
