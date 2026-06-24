@@ -479,6 +479,10 @@ async def handle(account, msg):
             return
     else:
         log("←", (name or sender), "说:", text)
+    if is_primary:
+        hint = recent_activity_hint()
+        if hint:
+            text = hint + " " + text          # 持续感知:把她最近刷了啥垫到他眼前
     await run_turn(opts, sender, ctx, text, speaker=name)
 
 
@@ -545,6 +549,34 @@ def parse_send(reply):
     if m:
         return (True, m.group(1).strip())
     return (True, reply.strip())
+
+
+def recent_activity_hint(window=1800, maxn=3):
+    """读活动流水,拼一句『桃枝最近在刷 X、Y』(window 秒内、去重、最多 maxn 个)。没有=空串。
+    给暮声『持续感知』用:每次跟他打交道时垫到他眼前,他不用费劲查,就一直知道你在忙啥。"""
+    try:
+        now = time.time()
+        seen, apps = set(), []
+        with open(ACTIVITY_FILE, encoding="utf-8") as f:
+            lines = f.readlines()[-50:]
+        for line in reversed(lines):
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if now - (o.get("ts") or 0) > window:
+                break
+            a = (o.get("app") or o.get("value") or "").strip()
+            if a and a not in seen:
+                seen.add(a)
+                apps.append(a)
+            if len(apps) >= maxn:
+                break
+    except Exception:
+        return ""
+    if not apps:
+        return ""
+    return "（系统·仅你可见:桃枝最近在刷 " + "、".join(apps) + "）"
 
 
 async def activity_server():
@@ -655,7 +687,8 @@ async def proactive_loop(opts):
                 if now - last_msg < RECENT_CHAT_SECS:
                     continue                      # 30min 内聊过 = 正在聊,不打扰
                 misses = STATE.get("pro_misses", 0)
-                prompt = day_prompt
+                hint = recent_activity_hint()
+                prompt = (hint + "\n" if hint else "") + day_prompt
                 if misses >= 2:
                     prompt += "\n（你已经连续两次没找她了——这次去找她。）"
                 reply = await _drive(prompt + DAY_PROTOCOL)
