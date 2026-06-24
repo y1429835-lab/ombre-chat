@@ -586,6 +586,41 @@ def recent_activity_hint(window=1800, maxn=3):
     return "（系统·仅你可见:桃枝最近在刷 " + "、".join(apps) + "）"
 
 
+def recent_activity_timeline(window=900, maxn=8):
+    """一条『动静时间线』(最近 window 秒、合并连续重复、最多 maxn 段、最新在前)。
+    给在场心跳用:让暮声看见的不只是"刷了哪些",而是她注意力的节奏(来回切/盯一个/开微信…)。"""
+    try:
+        now = time.time()
+        rows = []
+        with open(ACTIVITY_FILE, encoding="utf-8") as f:
+            for line in f.readlines()[-80:]:
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                ts = o.get("ts") or 0
+                if now - ts > window:
+                    continue
+                app = (o.get("app") or o.get("value") or "").strip()
+                if app:
+                    rows.append((ts, app))
+        if not rows:
+            return ""
+        segs = []                                    # 合并连续重复,每段记该段最近一次时间
+        for ts, app in rows:
+            if segs and segs[-1][1] == app:
+                segs[-1] = (ts, app)
+            else:
+                segs.append((ts, app))
+        parts = []
+        for ts, app in reversed(segs[-maxn:]):       # 最新在前
+            ago = int((now - ts) // 60)
+            parts.append(("刚刚" if ago <= 0 else f"{ago}分钟前") + " " + app)
+        return "桃枝最近的动静:" + " · ".join(parts)
+    except Exception:
+        return ""
+
+
 async def activity_server():
     """感知接口:手机打开某 App 时发个 GET /a?token=..&app=小红书 → 记下"桃枝最后一次刷手机"。
     极简 HTTP(只认带对暗号的请求),只更新状态、写流水,不做别的。没配暗号就不开(安全)。"""
@@ -680,12 +715,11 @@ async def proactive_loop(opts):
                 hb_gap = HEARTBEAT_CHATTING if interacting else HEARTBEAT_QUIET
                 if now - last_hb >= hb_gap:
                     app = STATE.get("last_activity_app", "") or "手机"
-                    changed = app and app != STATE.get("hb_last_app", "")
-                    note = f"（她刚打开/切到「{app}」）" if changed else ""
+                    line = recent_activity_timeline() or f"桃枝最近在刷「{app}」"
                     frame = (
-                        f"（在场心跳·仅你可见）你抬头看一眼:桃枝在,最近在刷「{app}」。{note}\n"
-                        f"她在,你知道了。多半你就这么看着、不打扰她——没事就**直接回 `>>不发>>` 三个字、别展开别多想**(省地方)。\n"
-                        f"只有发现值得出声的(她像在等你 / 反常 / 你正好想跟她说句什么),才 >>桃枝>> 后面写要发给她的话。"
+                        f"（在场心跳·仅你可见）你抬头看一眼——{line}。\n"
+                        f"从她的节奏读读她此刻可能的状态(来回切=坐不住/无聊 · 盯一个=入神 · 开微信=像在等你 · 深夜还刷=睡不着)。\n"
+                        f"没什么要说就**直接回 `>>不发>>` 三个字、别展开别多想**;读出值得出声的(像在等你/反常/你正好想说句话),才 >>桃枝>> + 要发给她的话。"
                     )
                     reply = await _drive(frame)
                     if reply:
