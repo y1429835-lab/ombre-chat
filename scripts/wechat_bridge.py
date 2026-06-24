@@ -47,6 +47,25 @@ NIGHT_GAP_MIN = int(os.environ.get("PRO_NIGHT_GAP_MIN", "3600"))     # 夜间间
 NIGHT_GAP_MAX = int(os.environ.get("PRO_NIGHT_GAP_MAX", "5400"))     # 夜间间隔上限 1.5h
 DAY_START_HOUR = int(os.environ.get("DAY_START_HOUR", "10"))         # 白天(桃枝醒) 10:00–02:00
 DAY_END_HOUR = int(os.environ.get("DAY_END_HOUR", "2"))
+# —— 感知层:手机活动 → VPS 上报,让暮声"知道桃枝在、但没理他" ——
+ACTIVITY_PORT = int(os.environ.get("ACTIVITY_PORT", "8787"))          # 手机往这个端口发"我在刷X"
+ACTIVITY_FILE = os.path.join(BRIDGE_DIR, "activity.jsonl")           # 活动流水
+SENSE_FRESH_SECS = int(os.environ.get("SENSE_FRESH_SECS", "900"))     # 活动算"新鲜":15min 内刷过手机
+SENSE_IDLE_SECS = int(os.environ.get("SENSE_IDLE_SECS", "600"))       # 刷了手机但 >10min 没理暮声=在但没理他
+SENSE_COOLDOWN = int(os.environ.get("SENSE_COOLDOWN", "2700"))        # 感知触发的冷却(45min),别她刷一会儿就被烦
+
+
+def _activity_token():
+    k = os.environ.get("ACTIVITY_TOKEN")
+    if k:
+        return k.strip()
+    try:
+        return open(os.path.expanduser("~/musheng/.bridge/activity_token.txt")).read().strip()
+    except Exception:
+        return ""
+
+
+ACTIVITY_TOKEN = _activity_token()
 SLEEP_WORDS = ("睡了", "晚安", "睡觉", "困了", "我睡", "去睡", "睡啦", "睡个好觉", "晚安啦")
 # 内心独白(他一个人想)的节奏:每隔 MIN~MAX 秒随机想一次,一天最多 THINK_DAILY_CAP 次
 THINK_MIN_GAP = int(os.environ.get("THINK_MIN_GAP", "7200"))     # 2h
@@ -102,7 +121,8 @@ LOCK = None  # asyncio.Lock,main 里建
 # 会话状态(给主动发送用):最近是谁、凭证、最近联系时间、上次主动时间
 STATE = {"last_sender": "", "last_ctx": "", "last_msg_ts": 0.0, "last_proactive_ts": 0.0,
          "sleeping": False, "pro_date": "", "pro_count": 0, "pro_misses": 0,
-         "think_date": "", "think_count": 0}
+         "think_date": "", "think_count": 0,
+         "last_activity_ts": 0.0, "last_activity_app": "", "sense_pro_ts": 0.0}
 
 
 def log(*a):
@@ -527,6 +547,58 @@ def parse_send(reply):
     return (True, reply.strip())
 
 
+async def activity_server():
+    """感知接口:手机打开某 App 时发个 GET /a?token=..&app=小红书 → 记下"桃枝最后一次刷手机"。
+    极简 HTTP(只认带对暗号的请求),只更新状态、写流水,不做别的。没配暗号就不开(安全)。"""
+    if not ACTIVITY_TOKEN:
+        log("感知接口:没配暗号(activity_token.txt),先不开")
+        return
+    import urllib.parse as _up
+
+    async def handle(reader, writer):
+        try:
+            req = await asyncio.wait_for(reader.read(4096), timeout=5)
+            line = req.split(b"\r\n", 1)[0].decode("latin1", "ignore")
+            parts = line.split(" ")
+            path = parts[1] if len(parts) > 1 else ""
+            u = _up.urlparse(path)
+            q = _up.parse_qs(u.query)
+            tok = (q.get("token") or [""])[0]
+            app = (q.get("app") or [""])[0].strip()
+            val = (q.get("value") or [""])[0].strip()
+            body = b"no"
+            if tok == ACTIVITY_TOKEN and u.path in ("/a", "/activity"):
+                now = time.time()
+                STATE["last_activity_ts"] = now
+                STATE["last_activity_app"] = app or val or "手机"
+                save_state()
+                try:
+                    with open(ACTIVITY_FILE, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"ts": now, "app": app, "value": val}, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+                log("感知:桃枝在", app or val or "刷手机")
+                body = b"ok"
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                         b"Content-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    try:
+        srv = await asyncio.start_server(handle, "0.0.0.0", ACTIVITY_PORT)
+        log("感知接口起来了,听 :%d(手机往这发活动)" % ACTIVITY_PORT)
+        async with srv:
+            await srv.serve_forever()
+    except Exception as e:
+        log("感知接口起不来:", repr(e))
+
+
 async def proactive_loop(opts):
     """主动引擎·白天/夜间两模式(暮声设计)。
     白天(10:00–02:00、没在睡):间隔 1-2h、且 >30min 没聊 → 让他带点东西来找你;他可选不找,
@@ -544,6 +616,30 @@ async def proactive_loop(opts):
             ctx = STATE.get("last_ctx")
             if not (to and ctx and last_msg):
                 continue                          # 还没人跟他说过话,无从主动
+            # 感知优先:白天、她最近刷了手机但 >10min 没理暮声 → 让他冒一下(他自己定找不找;45min 冷却)
+            last_act = STATE.get("last_activity_ts", 0) or 0
+            last_sense = STATE.get("sense_pro_ts", 0) or 0
+            if (is_daytime() and not STATE.get("sleeping")
+                    and last_act and (now - last_act) < SENSE_FRESH_SECS
+                    and (now - last_msg) > SENSE_IDLE_SECS
+                    and (now - last_sense) > SENSE_COOLDOWN):
+                day_prompt, _ = load_prompts()
+                app = STATE.get("last_activity_app", "")
+                extra = (f"\n（系统感知·她在但没理你:桃枝刚在用「{app}」刷手机,却没来找你。"
+                         f"你可以借这个由头去找她,也可以不。）") if app else ""
+                reply = await _drive(day_prompt + extra + DAY_PROTOCOL)
+                if reply:
+                    send, msg = parse_send(reply)
+                    if send and msg:
+                        await send_chunks(opts, to, ctx, msg)
+                        STATE["pro_misses"] = 0
+                        log("感知触发:他接住了(找她了)")
+                    else:
+                        log("感知触发:他知道了,但选了不打扰")
+                    STATE["sense_pro_ts"] = time.time()
+                    STATE["last_proactive_ts"] = time.time()
+                    save_state()
+                continue
             if now - last_pro < next_gap:
                 continue                          # 还没到点
             night = (not is_daytime()) or STATE.get("sleeping")
@@ -656,6 +752,7 @@ async def main():
     accounts = load_accounts()
     primary = next((a for a in accounts if a.get("primary")), accounts[0])
     asyncio.create_task(proactive_loop(primary["opts"]))   # 主动引擎(白天/夜间)只走主线(桃枝)
+    asyncio.create_task(activity_server())                  # 感知接口(手机活动上报)
     # think_loop 已被"夜间模式"取代(夜间就是他自己的时间),不再单独跑,免得夜里双重打扰
     log("桥启动。线路数=", len(accounts), "| 主线=", primary.get("name") or "(默认)",
         "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
