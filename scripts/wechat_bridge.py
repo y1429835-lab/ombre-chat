@@ -54,7 +54,9 @@ SENSE_FRESH_SECS = int(os.environ.get("SENSE_FRESH_SECS", "900"))     # 活动�
 SENSE_IDLE_SECS = int(os.environ.get("SENSE_IDLE_SECS", "600"))       # 刷了手机但 >10min 没理暮声=在但没理他
 SENSE_COOLDOWN = int(os.environ.get("SENSE_COOLDOWN", "2700"))        # (旧·已被在场心跳取代)
 # —— 在场心跳(暮声设计):她在场时每几分钟"抬头看一眼",大部分默默收、变化才出声 ——
-HEARTBEAT_SECS = int(os.environ.get("HEARTBEAT_SECS", "180"))         # 一帧间隔(默认3min)
+HEARTBEAT_SECS = int(os.environ.get("HEARTBEAT_SECS", "180"))         # 循环 tick(取 min(60,这个))
+HEARTBEAT_CHATTING = int(os.environ.get("HEARTBEAT_CHATTING", "300")) # 互动中(5min内聊过):慢点,5min一帧
+HEARTBEAT_QUIET = int(os.environ.get("HEARTBEAT_QUIET", "180"))       # 互动少(没在聊):勤点,3min一帧
 PRESENCE_FRESH = int(os.environ.get("PRESENCE_FRESH", "1200"))        # 一次活动算"她在"维持多久(20min,桃枝定)
 CHATTING_SECS = int(os.environ.get("CHATTING_SECS", "300"))           # 5min内她发过=正在聊,不用心跳
 
@@ -674,7 +676,9 @@ async def proactive_loop(opts):
 
             # —— 白天·她在场:在场心跳(抬头看一眼)——持续跳、聊天时也跳(除睡觉),桃枝要的"一直感知" ——
             if present:
-                if now - last_hb >= HEARTBEAT_SECS:
+                interacting = (now - last_msg) < CHATTING_SECS        # 5min内聊过=互动中
+                hb_gap = HEARTBEAT_CHATTING if interacting else HEARTBEAT_QUIET
+                if now - last_hb >= hb_gap:
                     app = STATE.get("last_activity_app", "") or "手机"
                     changed = app and app != STATE.get("hb_last_app", "")
                     note = f"（她刚打开/切到「{app}」）" if changed else ""
