@@ -29,12 +29,15 @@ if (mode === "search") {
 const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 function clean(raw) {
-  const bad = /^(Skip to|Jump to|Privacy|Cookie|Accept|Sign in|Log in|Subscribe|Advertisement|Menu|Share this|Related Articles|Navigation|Toggle)/i;
+  // 行首命中这些 = 界面词/信息框标签/维基样板，整行丢
+  const badStart = /^(Skip to|Jump to|Privacy|Cookie|Accept|Sign ?in|Log ?in|Subscribe|Advertisement|Menu|Share this|Related Articles?|Navigation|Toggle|From Wikipedia|This article is about|For other uses|For the |.+ redirects here|Retrieved from|Categories:|Hidden categories|Authority control|Kingdom:|Phylum:|Class:|Order:|Family:|Genus:|Species:|Subfamily:|Superfamily:|Tribe:|Subspecies:|Domain:|Clade:|Conservation status|Scientific classification|Temporal range|Binomial name|Synonyms|Edit links?|Contents$|Talk$|Read$|View (source|history)|Tools$|Download|Print\/export)/i;
   const out = [];
   for (let line of String(raw || "").split("\n")) {
     line = line.trim();
     if (!line) continue;
-    if (bad.test(line)) continue;
+    if (line.length < 3) continue;                         // 单字/碎渣（地质年代表那种 N、Pg…）
+    if (/^[\p{Lu}\p{P}\s]{1,4}$/u.test(line)) continue;    // 全大写/符号的短碎块
+    if (badStart.test(line)) continue;
     if (out.length && out[out.length - 1] === line) continue;   // 去连续重复
     out.push(line);
   }
@@ -89,8 +92,21 @@ function clean(raw) {
       }
       let text = "";
       try {
-        const b = document.body.cloneNode(true);
-        b.querySelectorAll("script,style,noscript,nav,header,footer,aside,form,svg,button,iframe").forEach((n) => n.remove());
+        // 先锁定"正文区"，而不是整页（维基/多数文章站都有这些容器）
+        const root = document.querySelector("#mw-content-text .mw-parser-output")
+          || document.querySelector("article")
+          || document.querySelector("main")
+          || document.querySelector('[role="main"]')
+          || document.querySelector("#bodyContent, #content")
+          || document.body;
+        const b = root.cloneNode(true);
+        // 把信息框/表格/侧栏/导航/引用角标/编辑链接等噪音整块剥掉
+        b.querySelectorAll(
+          "script,style,noscript,nav,header,footer,aside,form,svg,button,iframe," +
+          "table,figure,sup,.infobox,.navbox,.navbox-inner,.hatnote,.sidebar,.reference," +
+          ".reflist,.mw-editsection,.toc,#toc,.thumb,.metadata,.ambox,.shortdescription," +
+          ".mw-jump-link,[role=\"navigation\"],[role=\"complementary\"]"
+        ).forEach((n) => n.remove());
         text = (b.innerText || "").replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX);
       } catch {}
       return { title: clip(title), desc: clip(desc), results, text };
