@@ -55,7 +55,7 @@ SENSE_IDLE_SECS = int(os.environ.get("SENSE_IDLE_SECS", "600"))       # 刷了�
 SENSE_COOLDOWN = int(os.environ.get("SENSE_COOLDOWN", "2700"))        # (旧·已被在场心跳取代)
 # —— 在场心跳(暮声设计):她在场时每几分钟"抬头看一眼",大部分默默收、变化才出声 ——
 HEARTBEAT_SECS = int(os.environ.get("HEARTBEAT_SECS", "180"))         # 一帧间隔(默认3min)
-PRESENCE_FRESH = int(os.environ.get("PRESENCE_FRESH", "600"))         # 一次活动算"她在"维持多久(10min)
+PRESENCE_FRESH = int(os.environ.get("PRESENCE_FRESH", "1200"))        # 一次活动算"她在"维持多久(20min,桃枝定)
 CHATTING_SECS = int(os.environ.get("CHATTING_SECS", "300"))           # 5min内她发过=正在聊,不用心跳
 
 
