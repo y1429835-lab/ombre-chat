@@ -52,11 +52,10 @@ def main():
     if not tp or not os.path.exists(tp):
         sys.exit(0)
     try:
-        text = last_assistant_text(tp)
+        text = last_assistant_text(tp) or ""
     except Exception:
-        sys.exit(0)
-    if not text:
-        sys.exit(0)
+        text = ""
+    # 注意:哪怕这轮没正文(纯工具)也照常写空 + seq+1——这样桥知道"这轮结束了",不会傻等超时
 
     os.makedirs(BRIDGE_DIR, exist_ok=True)
     try:

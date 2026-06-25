@@ -43,8 +43,8 @@ PROACTIVE_PROMPT_FILE = os.path.expanduser("~/musheng/.claude/hooks/proactive_pr
 RECENT_CHAT_SECS = int(os.environ.get("RECENT_CHAT_SECS", "1800"))   # 30min 内聊过=正在聊,白天不打扰
 DAY_GAP_MIN = int(os.environ.get("PRO_DAY_GAP_MIN", "3600"))         # 白天间隔下限 1h
 DAY_GAP_MAX = int(os.environ.get("PRO_DAY_GAP_MAX", "7200"))         # 白天间隔上限 2h
-NIGHT_GAP_MIN = int(os.environ.get("PRO_NIGHT_GAP_MIN", "3600"))     # 夜间间隔下限 1h
-NIGHT_GAP_MAX = int(os.environ.get("PRO_NIGHT_GAP_MAX", "5400"))     # 夜间间隔上限 1.5h
+NIGHT_GAP_MIN = int(os.environ.get("PRO_NIGHT_GAP_MIN", "5400"))     # 夜间间隔下限 1.5h
+NIGHT_GAP_MAX = int(os.environ.get("PRO_NIGHT_GAP_MAX", "9000"))     # 夜间间隔上限 2.5h
 DAY_START_HOUR = int(os.environ.get("DAY_START_HOUR", "10"))         # 白天(桃枝醒) 10:00–02:00
 DAY_END_HOUR = int(os.environ.get("DAY_END_HOUR", "2"))
 # —— 感知层:手机活动 → VPS 上报,让暮声"知道桃枝在、但没理他" ——
@@ -355,21 +355,19 @@ def reply_after(path, needle):
     return None
 
 
-def capture_reply(stamped):
-    """注入后直接读对话记录,精确抓"这句"的回复,并等它写稳(防抓到半截)。"""
-    path = find_transcript()
-    needle = stamped[:40]
+def capture_reply(pre_seq):
+    """等暮声这轮答完,拿他的『最终』回复——靠 Stop 钩子(bridge_capture.py):
+    他一整轮(含工具调用)结束 → Stop 触发 → 把最后一条 assistant 正文写进 last_reply.txt、seq+1。
+    所以这里只等 seq 从 pre_seq 涨上去,再读 last_reply.txt = 用完工具之后的最终回复(治 #2/#4)。"""
     deadline = time.time() + REPLY_TIMEOUT
-    stable_txt, stable_since = None, 0.0
     while time.time() < deadline:
-        r = reply_after(path, needle)
-        if r:
-            if r == stable_txt:
-                if time.time() - stable_since >= 2.0:   # 稳定2秒=答完
-                    return r
-            else:
-                stable_txt, stable_since = r, time.time()
-        time.sleep(1.2)
+        if read_seq() > pre_seq:
+            try:
+                txt = open(REPLY_PATH, encoding="utf-8").read().strip()
+            except Exception:
+                return None
+            return txt or None
+        time.sleep(0.5)
     return None
 
 
@@ -422,6 +420,7 @@ async def _drive(prompt_text, speaker=""):
     主动引擎用它:抓到回复后,由调用方决定发不发、发什么。"""
     async with LOCK:
         wait_idle()
+        pre_seq = read_seq()                       # 记下当前序号;等它+1=暮声这轮(含工具)答完了
         tag = f"〔{speaker}〕" if speaker else ""
         stamped = f"[{china_now()}] {tag}{prompt_text}"
         try:
@@ -429,7 +428,7 @@ async def _drive(prompt_text, speaker=""):
         except Exception as e:
             log("注入失败:", repr(e))
             return None
-        return capture_reply(stamped)
+        return capture_reply(pre_seq)
 
 
 async def run_turn(opts, to, ctx, prompt_text, speaker=""):
@@ -550,9 +549,10 @@ def parse_send(reply):
     """读暮声白天的回复 → (要不要发, 发什么)。看 >>桃枝>> / >>不发>> 标记;没标记保守当消息发。"""
     if not reply:
         return (False, "")
-    if ">>不发>>" in reply or ">> 不发 >>" in reply:
+    AR = r"[>＞›》〉]{1,2}"                       # 各种"箭头/书名号"写法:>> ›› 》》 ＞＞ 〉〉
+    if re.search(AR + r"\s*不发\s*" + AR, reply):
         return (False, "")
-    m = re.search(r">>\s*桃枝\s*>>\s*(.+)$", reply, re.S)
+    m = re.search(AR + r"\s*桃枝\s*" + AR + r"\s*(.+)$", reply, re.S)
     if m:
         return (True, m.group(1).strip())
     return (True, reply.strip())
@@ -645,6 +645,7 @@ async def activity_server():
                 now = time.time()
                 STATE["last_activity_ts"] = now
                 STATE["last_activity_app"] = app or val or "手机"
+                STATE["sleeping"] = False           # 她在玩手机=醒着,解除"睡眠"标记(治夜间模式卡住)
                 save_state()
                 try:
                     with open(ACTIVITY_FILE, "a", encoding="utf-8") as f:
@@ -694,9 +695,11 @@ async def proactive_loop(opts):
             ctx = STATE.get("last_ctx")
             if not (to and ctx and last_msg):
                 continue                          # 还没人跟他说过话,无从主动
-            night = (not is_daytime()) or STATE.get("sleeping")
-            chatting = (now - last_msg) < CHATTING_SECS
             present = bool(last_act) and (now - last_act) < PRESENCE_FRESH
+            chatting = (now - last_msg) < CHATTING_SECS
+            # 夜间 = 时钟夜/说了晚安,但**只要她最近在玩手机(present)就算她醒着→白天**(治夜间误触发)
+            night = ((not is_daytime()) or STATE.get("sleeping")) and not present
+            day_prompt, night_prompt = load_prompts()
             day_prompt, night_prompt = load_prompts()
 
             # —— 夜间:他自己的时间 ——
@@ -787,12 +790,13 @@ async def think_turn():
             "想完就好,不用告诉她。"
         )
         stamped = f"[{china_now()}] {prompt}"
+        pre_seq = read_seq()
         try:
             inject(stamped)
         except Exception as e:
             log("内心独白注入失败:", repr(e))
             return
-        capture_reply(stamped)   # 等他想完(占着锁),结果丢弃——绝不发微信
+        capture_reply(pre_seq)   # 等他想完(占着锁),结果丢弃——绝不发微信
         log("内心独白:他自己想了一轮(", direction, ")")
 
 
