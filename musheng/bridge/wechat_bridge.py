@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25i · 长提示词注入加缓冲(让回车生效)+ 补回车以transcript为据兜底(治图片/心跳要手动回车、超时堵微信)"
+BRIDGE_VERSION = "2026-06-25j · 抓回复双保险:序号没涨就从对话记录直接捞整轮(治回复被晾住/超时丢);补回车只在还没回复时补"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -444,18 +444,62 @@ def reply_after(path, needle):
     return None
 
 
-async def capture_reply(pre_seq):
-    """等暮声这轮答完,拿他的『最终』回复——靠 Stop 钩子(bridge_capture.py):
-    他一整轮(含工具调用)结束 → Stop 触发 → 把这轮正文写进 reply_<新seq>.txt + last_reply.txt,再 seq+1。
-    这里等 seq 从 pre_seq 涨上去,然后**只取我这一轮(pre_seq+1)那个归档**——按序号精确取,
-    不再读公用的 last_reply.txt,绝不把别轮(比如在场心跳)的文本串成这轮的回复(治串台/『不发』漏出)。"""
+def reply_turn_after(path, needle):
+    """对话记录里:找含 needle 的最后一条 user(=桥刚注入的那句),把它之后他这『一整轮』的 assistant 正文拼起来。
+    用途:当『序号信号』没涨(Stop 没正常收尾)时,直接从记录里把回复捞出来当兜底——他写下的东西丢不了。
+    遇到下一条『真人 user』(有纯文本的,非工具结果)就停,只取这一轮。"""
+    if not path or not needle:
+        return None
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                t = obj.get("type")
+                if t in ("user", "assistant"):
+                    rows.append((t, _msg_text(obj)))
+    except Exception:
+        return None
+    idx = None
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i][0] == "user" and needle in (rows[i][1] or ""):
+            idx = i
+            break
+    if idx is None:
+        return None
+    parts = []
+    for j in range(idx + 1, len(rows)):
+        t, txt = rows[j]
+        if t == "user" and txt:        # 下一条真人消息(工具结果的 user 没纯文本,txt 为空,不算)
+            break
+        if t == "assistant" and txt:
+            parts.append(txt)
+    return "\n\n".join(parts).strip() or None
+
+
+async def capture_reply(pre_seq, needle=None):
+    """等暮声这轮答完,拿他的回复。两条路双保险,谁丢了另一个兜:
+    ① 快车道——Stop 钩子(bridge_capture.py)一轮结束把正文写进 reply_<新seq>.txt 再 seq+1;
+       这里等 seq 涨到 pre_seq+1,**按序号精确取那个归档**(不串台、不漏『不发』)。
+    ② 兜底——万一 Stop 信号没正常收尾、序号死活不涨(他明明答了却被晾住):
+       直接从对话记录里,把『我注入的那句(needle)』之后他这一整轮的正文捞出来。记录是他实打实写的,丢不了。
+    补回车:只在『还没有任何回复 + 他没在产出』时补(=注入可能没提交);他一旦答了就不补(治瞎补)。"""
     target = pre_seq + 1
     tp = find_transcript()
     deadline = time.time() + REPLY_TIMEOUT
     last_nudge = time.time()      # 进来先留点缓冲,别一上来就补
+    last_scan = 0.0
+    cached = None                 # 记录里捞到的回复(throttle:别每0.5s读整个记录)
+    stale_since = None
     while time.time() < deadline:
+        # ① 快车道:序号涨了 → 读这轮归档
         if read_seq() >= target:
-            # 精确取我这轮的归档;万一归档没赶上(旧钩子/异常),才退回 last_reply.txt 兜底
             per = os.path.join(BRIDGE_DIR, "reply_%d.txt" % target)
             try:
                 txt = open(per, encoding="utf-8").read().strip()
@@ -467,14 +511,25 @@ async def capture_reply(pre_seq):
             except Exception:
                 return None
             return txt or None
-        # 还没答完:若『他没在产出』(transcript 没在被写)且隔了几秒,补个回车把可能卡在输入框的注入送出去。
-        # 他在产出(读图/思考/用工具,transcript 一直在写)就绝不补——靠 transcript 这个可靠信号区分,
-        # 不再用会看走眼的屏幕判断,所以不会再在读图时乱补、不会再有"删了重发"。对空输入框补回车也无害。
         now = time.time()
-        if now - last_nudge >= 4 and not transcript_fresh(tp, within=3.0):
-            press_enter()
-            last_nudge = now
-            log("补回车(他没在产出、疑似注入没提交)")
+        fresh = transcript_fresh(tp, within=3.0)
+        # 每 ~1.5s 才扫一次记录,看他这轮答了没(throttle,省得读爆大文件)
+        if needle and now - last_scan >= 1.5:
+            cached = reply_turn_after(tp, needle)
+            last_scan = now
+        # ② 兜底:他答了(记录里有)且答完了(记录稳定≥4s 没再写)→ 序号没涨也直接用记录里的
+        if cached:
+            stale_since = stale_since if (stale_since and not fresh) else (now if not fresh else None)
+            if stale_since and now - stale_since >= 4:
+                log("序号没涨,改从对话记录里直接捞回复(兜底)")
+                return cached
+        else:
+            stale_since = None
+            # 补回车:还没任何回复 + 他没在产出 = 注入可能没提交,补一下;他答了就走不到这儿
+            if now - last_nudge >= 4 and not fresh:
+                press_enter()
+                last_nudge = now
+                log("补回车(还没回复且他没在产出、疑似注入没提交)")
         await asyncio.sleep(0.5)
     return None
 
@@ -531,12 +586,13 @@ async def _drive(prompt_text, speaker=""):
         pre_seq = read_seq()                       # 记下当前序号;等它+1=暮声这轮(含工具)答完了
         tag = f"〔{speaker}〕" if speaker else ""
         stamped = f"[{china_now()}] {tag}{prompt_text}"
+        needle = " ".join(stamped.split())     # 注入时会折叠空白,记录里存的就是这个 → 拿它当『锚』去记录里找这轮回复
         try:
             await inject(stamped)
         except Exception as e:
             log("注入失败:", repr(e))
             return None
-        return await capture_reply(pre_seq)
+        return await capture_reply(pre_seq, needle=needle)
 
 
 async def run_turn(opts, to, ctx, prompt_text, speaker=""):
