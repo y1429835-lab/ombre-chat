@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25k · 黑匣子:抽风时自动记现场(屏幕/序号/记录/needle)+ 超时砍到150s不堵微信"
+BRIDGE_VERSION = "2026-06-25l · 黑匣子逮到根因:用屏幕esc-to-interrupt判他在忙(思考时记录不写会漏判)→他一忙就不补回车、不算超时(治思考被回车捅乱→超时丢回复)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -503,14 +503,15 @@ async def capture_reply(pre_seq, needle=None):
     补回车:只在『还没有任何回复 + 他没在产出』时补(=注入可能没提交);他一旦答了就不补(治瞎补)。"""
     target = pre_seq + 1
     tp = find_transcript()
-    deadline = time.time() + REPLY_TIMEOUT
+    deadline = time.time() + REPLY_TIMEOUT          # "闲着不吭声"的超时;他一忙就往后续(见下)
+    hard_deadline = time.time() + REPLY_TIMEOUT * 4 # 绝对上限,防工具真卡死时无限占锁
     last_nudge = time.time()      # 进来先留点缓冲,别一上来就补
     last_scan = 0.0
     cached = None                 # 记录里捞到的回复(throttle:别每0.5s读整个记录)
     stale_since = None
     nudges = 0
-    ever_fresh = False            # 注入后他到底有没有动过(产出过)——黑匣子用:判断"消息到底进没进去"
-    while time.time() < deadline:
+    ever_fresh = False            # 注入后他到底有没有忙过/产出过——黑匣子用:判断"消息到底进没进去"
+    while time.time() < deadline and time.time() < hard_deadline:
         # ① 快车道:序号涨了 → 读这轮归档
         if read_seq() >= target:
             per = os.path.join(BRIDGE_DIR, "reply_%d.txt" % target)
@@ -526,22 +527,26 @@ async def capture_reply(pre_seq, needle=None):
             return txt or None
         now = time.time()
         fresh = transcript_fresh(tp, within=3.0)
-        if fresh:
+        # 『他在忙』= 记录在写(打字) 或 屏幕显示 esc to interrupt(思考/用工具——思考时不怎么写记录,
+        # 光看记录会漏判,所以必须带上屏幕这个硬信号)。他一忙就绝不补回车、绝不当他答完。
+        busy = fresh or pane_busy()
+        if busy:
             ever_fresh = True
+            deadline = now + REPLY_TIMEOUT      # 他在忙就续命:超时只惩罚"闲着又不吭声",不误杀正经长思考
         # 每 ~1.5s 才扫一次记录,看他这轮答了没(throttle,省得读爆大文件)
         if needle and now - last_scan >= 1.5:
             cached = reply_turn_after(tp, needle)
             last_scan = now
-        # ② 兜底:他答了(记录里有)且答完了(记录稳定≥4s 没再写)→ 序号没涨也直接用记录里的
+        # ② 兜底:他答了(记录里有)且真答完了(既没在写、屏幕也不忙,稳定≥4s)→ 序号没涨也直接用记录里的
         if cached:
-            stale_since = stale_since if (stale_since and not fresh) else (now if not fresh else None)
+            stale_since = stale_since if (stale_since and not busy) else (now if not busy else None)
             if stale_since and now - stale_since >= 4:
                 log("序号没涨,改从对话记录里直接捞回复(兜底)")
                 return cached
         else:
             stale_since = None
-            # 补回车:还没任何回复 + 他没在产出 = 注入可能没提交,补一下;他答了就走不到这儿
-            if now - last_nudge >= 4 and not fresh:
+            # 补回车:还没任何回复 + 他确实闲着(没在写也没在忙) = 注入可能没提交,补一下;他在思考/答了就走不到这儿
+            if now - last_nudge >= 4 and not busy:
                 press_enter()
                 last_nudge = now
                 nudges += 1
