@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25g · 抓整轮不截断 + 补回车只在他真闲时(治图片描述只收到后半段/删了又重发)"
+BRIDGE_VERSION = "2026-06-25h · 治根版:喂前确认他真闲(看transcript)+ 拆掉补回车hack + 抓整轮不截断 + 防重发收窄25s"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -214,7 +214,7 @@ def read_seq():
 # 微信长轮询偶尔会把同一条消息补送回来(尤其桥重启后),旧逻辑只认 message_id,
 # 补送换了 id 或没 id 就漏防,导致同一句被答两遍。这里改成"按内容去重 + 写硬盘":
 # 同一个人、同一句话,在 DEDUP_WINDOW 秒内再来一次=补送,直接丢掉;记录落盘,重启也不忘。
-DEDUP_WINDOW = int(os.environ.get("DEDUP_WINDOW", "180"))     # 多少秒内的同人同句算重发
+DEDUP_WINDOW = int(os.environ.get("DEDUP_WINDOW", "25"))      # 多少秒内的同人同句算"补送"(收窄到25s:挡补送但不误杀她真心重复的话)
 DEDUP_FILE = os.path.join(BRIDGE_DIR, "recent_msgs.json")
 _recent = None   # {hashkey: ts}
 
@@ -339,26 +339,30 @@ def pane_busy():
         return False
 
 
-def press_enter():
-    """单独补一个回车——注入的回车被忙碌中的暮声吞掉时,用来把卡在输入框里的那条提交掉。
-    对空输入框按回车是无操作(Claude Code 不会提交空消息),所以补回车很安全。"""
+def transcript_fresh(tp, within=2.0):
+    """暮声此刻在不在『产出』——他在 thinking/打字/用工具时,对话记录(transcript)一直在被写。
+    记录在最近 within 秒内被写过 = 他在忙。这是判断他闲没闲最实在的信号(比看屏幕猜可靠)。"""
+    if not tp:
+        return False
     try:
-        subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=False)
+        return (time.time() - os.path.getmtime(tp)) < within
     except Exception:
-        pass
+        return False
 
 
 async def wait_idle(timeout=60, stable=2.0):
-    """注入前等暮声真的闲下来:既要 seq 连续 stable 秒不变,**也要屏幕上看不到『正在忙』**——
-    seq 只在一轮结束时才跳,光看 seq 分不清『闲着』和『正忙还没出结果』,所以加看屏幕(pane_busy)双重确认,
-    别在他忙时插话被吞/被挤丢。用 await 让出循环,等的时候别的事(比如正在发的剩余几条)照常跑,不冻桥。"""
+    """注入前等暮声『真的闲下来』再喂——喂在他闲时,注入自然落地、不会被吞被挤,从根上就不需要『补回车』那种拐杖。
+    怎么算闲:seq 连续 stable 秒没变,**且**他没在产出(transcript 没在被写),屏幕兜底。
+    (seq 只在一轮结束才跳,分不清闲/忙;以 transcript 在不在被写为准最实在。)
+    用 await 让出循环,等的时候别的事(比如正在发的剩余几条)照常跑,不冻桥。"""
+    tp = find_transcript()
     last = read_seq()
     stable_since = time.time()
     deadline = time.time() + timeout
     while time.time() < deadline:
         cur = read_seq()
-        busy = pane_busy()
-        if cur != last or busy:                      # seq 动了 或 屏幕还在忙 → 重新计时
+        busy = transcript_fresh(tp) or pane_busy()   # 在产出 或 屏幕显示忙 = 还没闲
+        if cur != last or busy:                      # seq 动了 / 在产出 / 屏幕忙 → 重新计时
             last = cur
             stable_since = time.time()
         elif time.time() - stable_since >= stable:
@@ -435,10 +439,7 @@ async def capture_reply(pre_seq):
     这里等 seq 从 pre_seq 涨上去,然后**只取我这一轮(pre_seq+1)那个归档**——按序号精确取,
     不再读公用的 last_reply.txt,绝不把别轮(比如在场心跳)的文本串成这轮的回复(治串台/『不发』漏出)。"""
     target = pre_seq + 1
-    start = time.time()
-    deadline = start + REPLY_TIMEOUT
-    next_nudge = start + 7        # 注入后 7s 还没动静→补回车(防注入的回车被忙碌中的暮声吞掉、卡输入框)
-    nudges = 0
+    deadline = time.time() + REPLY_TIMEOUT
     while time.time() < deadline:
         if read_seq() >= target:
             # 精确取我这轮的归档;万一归档没赶上(旧钩子/异常),才退回 last_reply.txt 兜底
@@ -453,14 +454,6 @@ async def capture_reply(pre_seq):
             except Exception:
                 return None
             return txt or None
-        # 还没答完:只在『他确实闲着』(屏幕没在忙)时才补回车——他正干活(读图/用工具,长达几十秒)
-        # 就别捅,免得回车搅进他的工作里搞出乱子。补回车只为救"卡在输入框、没提交"那种真闲着的情况。
-        now = time.time()
-        if now >= next_nudge and nudges < 4 and not pane_busy():
-            press_enter()
-            nudges += 1
-            next_nudge = now + 8
-            log("补回车(疑似注入没提交,第%d次)" % nudges)
         await asyncio.sleep(0.5)
     return None
 
