@@ -1,4 +1,3 @@
 @echo off
-chcp 65001 >nul
-rem 双击我 = 启动电脑眼(后台默默跑)。关掉弹出的窗口 = 收工。
-powershell -ExecutionPolicy Bypass -WindowStyle Minimized -File "%~dp0pc-eye.ps1"
+rem Double-click = start PC-Eye. The window stays open (shows status / errors). Close it = stop.
+powershell -NoExit -ExecutionPolicy Bypass -File "%~dp0pc-eye.ps1"
