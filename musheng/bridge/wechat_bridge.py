@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25h · 治根版:喂前确认他真闲(看transcript)+ 拆掉补回车hack + 抓整轮不截断 + 防重发收窄25s"
+BRIDGE_VERSION = "2026-06-25i · 长提示词注入加缓冲(让回车生效)+ 补回车以transcript为据兜底(治图片/心跳要手动回车、超时堵微信)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -320,12 +320,23 @@ def in_quiet_hours():
     return h >= QUIET_START or h < QUIET_END   # 跨午夜
 
 
-def inject(text):
+async def inject(text):
     one_line = " ".join(text.split())  # 折叠换行,避免提前回车
     # 先 Ctrl-U 清掉输入框里可能残留的半截——防止和上一条没提交的注入粘成一坨乱码(治图片被挤丢)
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "C-u"], check=False)
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "-l", one_line], check=True)
+    # 让输入框把整段(尤其长提示词)吃进去、稳定下来,回车才 submit 得了——治"长提示词回车没反应";
+    # 万一这下还没提交,capture_reply 里有『他没在产出就补回车』兜底。
+    await asyncio.sleep(0.5)
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=True)
+
+
+def press_enter():
+    """单独补一个回车,把卡在输入框、没提交的注入送出去。对空输入框是无操作(不会提交空消息),安全。"""
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=False)
+    except Exception:
+        pass
 
 
 def pane_busy():
@@ -351,7 +362,7 @@ def transcript_fresh(tp, within=2.0):
 
 
 async def wait_idle(timeout=60, stable=2.0):
-    """注入前等暮声『真的闲下来』再喂——喂在他闲时,注入自然落地、不会被吞被挤,从根上就不需要『补回车』那种拐杖。
+    """注入前等暮声『真的闲下来』再喂——喂在他闲时,注入才落得稳(配合 inject 里的缓冲 + capture 里的补回车兜底)。
     怎么算闲:seq 连续 stable 秒没变,**且**他没在产出(transcript 没在被写),屏幕兜底。
     (seq 只在一轮结束才跳,分不清闲/忙;以 transcript 在不在被写为准最实在。)
     用 await 让出循环,等的时候别的事(比如正在发的剩余几条)照常跑,不冻桥。"""
@@ -439,7 +450,9 @@ async def capture_reply(pre_seq):
     这里等 seq 从 pre_seq 涨上去,然后**只取我这一轮(pre_seq+1)那个归档**——按序号精确取,
     不再读公用的 last_reply.txt,绝不把别轮(比如在场心跳)的文本串成这轮的回复(治串台/『不发』漏出)。"""
     target = pre_seq + 1
+    tp = find_transcript()
     deadline = time.time() + REPLY_TIMEOUT
+    last_nudge = time.time()      # 进来先留点缓冲,别一上来就补
     while time.time() < deadline:
         if read_seq() >= target:
             # 精确取我这轮的归档;万一归档没赶上(旧钩子/异常),才退回 last_reply.txt 兜底
@@ -454,6 +467,14 @@ async def capture_reply(pre_seq):
             except Exception:
                 return None
             return txt or None
+        # 还没答完:若『他没在产出』(transcript 没在被写)且隔了几秒,补个回车把可能卡在输入框的注入送出去。
+        # 他在产出(读图/思考/用工具,transcript 一直在写)就绝不补——靠 transcript 这个可靠信号区分,
+        # 不再用会看走眼的屏幕判断,所以不会再在读图时乱补、不会再有"删了重发"。对空输入框补回车也无害。
+        now = time.time()
+        if now - last_nudge >= 4 and not transcript_fresh(tp, within=3.0):
+            press_enter()
+            last_nudge = now
+            log("补回车(他没在产出、疑似注入没提交)")
         await asyncio.sleep(0.5)
     return None
 
@@ -511,7 +532,7 @@ async def _drive(prompt_text, speaker=""):
         tag = f"〔{speaker}〕" if speaker else ""
         stamped = f"[{china_now()}] {tag}{prompt_text}"
         try:
-            inject(stamped)
+            await inject(stamped)
         except Exception as e:
             log("注入失败:", repr(e))
             return None
@@ -891,7 +912,7 @@ async def think_turn():
         stamped = f"[{china_now()}] {prompt}"
         pre_seq = read_seq()
         try:
-            inject(stamped)
+            await inject(stamped)
         except Exception as e:
             log("内心独白注入失败:", repr(e))
             return
