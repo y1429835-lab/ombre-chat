@@ -26,10 +26,11 @@ import datetime
 import base64
 import math
 import random
+import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25 · parse_send-fix(剥『桃枝>>』前缀,不再漏标记)"
+BRIDGE_VERSION = "2026-06-25b · parse_send-fix + 防重发(补送同句直接丢,落盘记得)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -207,6 +208,50 @@ def read_seq():
         return int(open(SEQ_PATH).read().strip() or "0")
     except Exception:
         return 0
+
+
+# —— 防重发(治"每条答两遍") ——
+# 微信长轮询偶尔会把同一条消息补送回来(尤其桥重启后),旧逻辑只认 message_id,
+# 补送换了 id 或没 id 就漏防,导致同一句被答两遍。这里改成"按内容去重 + 写硬盘":
+# 同一个人、同一句话,在 DEDUP_WINDOW 秒内再来一次=补送,直接丢掉;记录落盘,重启也不忘。
+DEDUP_WINDOW = int(os.environ.get("DEDUP_WINDOW", "180"))     # 多少秒内的同人同句算重发
+DEDUP_FILE = os.path.join(BRIDGE_DIR, "recent_msgs.json")
+_recent = None   # {hashkey: ts}
+
+
+def _dedup_key(sender, text):
+    raw = (sender or "") + "\x00" + (text or "")
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def _dedup_load():
+    global _recent
+    if _recent is None:
+        try:
+            _recent = json.load(open(DEDUP_FILE, encoding="utf-8"))
+        except Exception:
+            _recent = {}
+    return _recent
+
+
+def is_duplicate(sender, text, now=None):
+    """这条(同人同句)是不是 DEDUP_WINDOW 秒内刚处理过的补送?是→True(该丢)。
+    顺手记下这次、清理过期、落盘——所以判一次=记一次,重启也记得。"""
+    if not text:
+        return False
+    now = now if now is not None else time.time()
+    rec = _dedup_load()
+    # 清过期
+    for k in [k for k, ts in rec.items() if now - ts > DEDUP_WINDOW]:
+        rec.pop(k, None)
+    key = _dedup_key(sender, text)
+    dup = key in rec and (now - rec[key] <= DEDUP_WINDOW)
+    rec[key] = now           # 不管重不重,都把"最近一次"刷新到现在
+    try:
+        json.dump(rec, open(DEDUP_FILE, "w", encoding="utf-8"))
+    except Exception:
+        pass
+    return dup
 
 
 def extract_text(msg):
@@ -853,6 +898,11 @@ async def updates_loop(account):
                 continue
             if mid is not None:
                 seen.add(mid)
+            # 内容级防重发:补送回来的同人同句(换了 id 或没 id)在这儿拦掉,落盘、重启也记得
+            sender = getattr(msg, "from_user_id", "") or ""
+            if is_duplicate(sender, extract_text(msg)):
+                log("跳过(疑似补送/重发,刚答过同一句)", sender)
+                continue
             await handle(account, msg)
 
 
