@@ -59,15 +59,34 @@ def main():
 
     os.makedirs(BRIDGE_DIR, exist_ok=True)
     try:
-        with open(os.path.join(BRIDGE_DIR, "last_reply.txt"), "w", encoding="utf-8") as f:
-            f.write(text)
         seq_path = os.path.join(BRIDGE_DIR, "seq.txt")
         try:
             seq = int(open(seq_path).read().strip() or "0")
         except Exception:
             seq = 0
+        new_seq = seq + 1
+        # 关键:每一轮回复按"新序号"单独归档(reply_<seq>.txt),桥按序号精确取,绝不串台。
+        # 治"取你消息那轮抓到了心跳那轮的文本"(你的回复被心跳的『不发』顶替/挤到下一轮)。
+        with open(os.path.join(BRIDGE_DIR, "reply_%d.txt" % new_seq), "w", encoding="utf-8") as f:
+            f.write(text)
+        # last_reply.txt 保留(兜底/向后兼容)
+        with open(os.path.join(BRIDGE_DIR, "last_reply.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+        # 先写归档和正文,最后才动 seq——桥靠 seq 自增判"这轮答完了",必须最后落
         with open(seq_path, "w") as f:
-            f.write(str(seq + 1))
+            f.write(str(new_seq))
+        # 只留最近 30 轮归档,免得攒小文件
+        try:
+            for fn in os.listdir(BRIDGE_DIR):
+                if fn.startswith("reply_") and fn.endswith(".txt"):
+                    try:
+                        n = int(fn[len("reply_"):-len(".txt")])
+                    except Exception:
+                        continue
+                    if n <= new_seq - 30:
+                        os.remove(os.path.join(BRIDGE_DIR, fn))
+        except Exception:
+            pass
     except Exception:
         pass
     sys.exit(0)

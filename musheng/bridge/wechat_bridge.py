@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25b · parse_send-fix + 防重发(补送同句直接丢,落盘记得)"
+BRIDGE_VERSION = "2026-06-25c · 防重发 + 按序号精确取回复(治串台/回上次内容/不发漏出)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -406,11 +406,20 @@ def reply_after(path, needle):
 
 def capture_reply(pre_seq):
     """等暮声这轮答完,拿他的『最终』回复——靠 Stop 钩子(bridge_capture.py):
-    他一整轮(含工具调用)结束 → Stop 触发 → 把最后一条 assistant 正文写进 last_reply.txt、seq+1。
-    所以这里只等 seq 从 pre_seq 涨上去,再读 last_reply.txt = 用完工具之后的最终回复(治 #2/#4)。"""
+    他一整轮(含工具调用)结束 → Stop 触发 → 把这轮正文写进 reply_<新seq>.txt + last_reply.txt,再 seq+1。
+    这里等 seq 从 pre_seq 涨上去,然后**只取我这一轮(pre_seq+1)那个归档**——按序号精确取,
+    不再读公用的 last_reply.txt,绝不把别轮(比如在场心跳)的文本串成这轮的回复(治串台/『不发』漏出)。"""
+    target = pre_seq + 1
     deadline = time.time() + REPLY_TIMEOUT
     while time.time() < deadline:
-        if read_seq() > pre_seq:
+        if read_seq() >= target:
+            # 精确取我这轮的归档;万一归档没赶上(旧钩子/异常),才退回 last_reply.txt 兜底
+            per = os.path.join(BRIDGE_DIR, "reply_%d.txt" % target)
+            try:
+                txt = open(per, encoding="utf-8").read().strip()
+                return txt or None
+            except Exception:
+                pass
             try:
                 txt = open(REPLY_PATH, encoding="utf-8").read().strip()
             except Exception:
@@ -486,9 +495,16 @@ async def run_turn(opts, to, ctx, prompt_text, speaker=""):
     if reply is None:
         log("等暮声超时")
         return None
-    log("→ 暮声:", reply[:50].replace("\n", " "), "…")
-    await send_chunks(opts, to, ctx, reply)
-    return reply
+    # 兜底:回复本该是给桃枝的正文。万一抓串了别轮的控制标记(>>不发>>/>>桃枝>>),
+    # 在这儿用 parse_send 清掉——若是纯『不发』标记/清完为空,说明抓错了轮,直接不发,
+    # 绝不把内部信号漏进微信(配合上面的按序号精确取,双保险)。
+    send, cleaned = parse_send(reply)
+    if not send or not cleaned:
+        log("跳过(疑似串台:这轮抓到控制标记/空,不发):", reply[:40].replace("\n", " "))
+        return None
+    log("→ 暮声:", cleaned[:50].replace("\n", " "), "…")
+    await send_chunks(opts, to, ctx, cleaned)
+    return cleaned
 
 
 async def handle(account, msg):
