@@ -546,16 +546,21 @@ def is_daytime():
 
 
 def parse_send(reply):
-    """读暮声白天的回复 → (要不要发, 发什么)。看 >>桃枝>> / >>不发>> 标记;没标记保守当消息发。"""
+    """读暮声主动/心跳的回复 → (要不要发, 发什么)。认多种标记写法并剥干净:
+    >>桃枝>> / 桃枝>> / 发桃枝: / 给桃枝》》 都算"发给桃枝";『不发』就不发;裸"桃枝"(称呼)不当标记。"""
     if not reply:
         return (False, "")
-    AR = r"[>＞›》〉]{1,2}"                       # 各种"箭头/书名号"写法:>> ›› 》》 ＞＞ 〉〉
-    if re.search(AR + r"\s*不发\s*" + AR, reply):
+    r = reply.strip()
+    A = r"[>＞›》〉]"                                   # 各种箭头/书名号
+    if re.search(A + r"\s*不发|不发\s*" + A + r"|^\s*不发\s*$", r, re.M):
         return (False, "")
-    m = re.search(AR + r"\s*桃枝\s*" + AR + r"\s*(.+)$", reply, re.S)
-    if m:
-        return (True, m.group(1).strip())
-    return (True, reply.strip())
+    # 剥开头的"桃枝标记":桃枝 后面必须跟箭头或冒号才算标记(避免误删"桃枝,我想你"这种称呼)
+    r = re.sub(r"^\s*(?:发|给|对)?\s*" + A + r"*\s*桃枝\s*(?:" + A + r"+|[:：])\s*", "", r, count=1)
+    r = re.sub(A + r"+\s*桃枝\s*" + A + r"+", "", r)   # 句中被双箭头包着的残留标记
+    r = r.strip()
+    if not r:
+        return (False, "")
+    return (True, r)
 
 
 def recent_activity_hint(window=1800, maxn=3):
