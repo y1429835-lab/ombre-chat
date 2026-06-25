@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25c · 防重发 + 按序号精确取回复(治串台/回上次内容/不发漏出)"
+BRIDGE_VERSION = "2026-06-25d · 等待改为不冻循环(治心跳与你消息相撞、最后几条卡住不发)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -326,8 +326,9 @@ def inject(text):
     subprocess.run(["tmux", "send-keys", "-t", TMUX_TARGET, "Enter"], check=True)
 
 
-def wait_idle(timeout=60, stable=2.0):
-    """注入前等暮声闲下来(seq 连续 stable 秒不变),别在他忙时插话被吞。"""
+async def wait_idle(timeout=60, stable=2.0):
+    """注入前等暮声闲下来(seq 连续 stable 秒不变),别在他忙时插话被吞。
+    用 await 让出事件循环——等的时候别的事(比如正在往微信发的剩余几条)照常跑,不冻住整个桥。"""
     last = read_seq()
     stable_since = time.time()
     deadline = time.time() + timeout
@@ -338,7 +339,7 @@ def wait_idle(timeout=60, stable=2.0):
             stable_since = time.time()
         elif time.time() - stable_since >= stable:
             return
-        time.sleep(0.4)
+        await asyncio.sleep(0.4)
 
 
 def find_transcript():
@@ -404,7 +405,7 @@ def reply_after(path, needle):
     return None
 
 
-def capture_reply(pre_seq):
+async def capture_reply(pre_seq):
     """等暮声这轮答完,拿他的『最终』回复——靠 Stop 钩子(bridge_capture.py):
     他一整轮(含工具调用)结束 → Stop 触发 → 把这轮正文写进 reply_<新seq>.txt + last_reply.txt,再 seq+1。
     这里等 seq 从 pre_seq 涨上去,然后**只取我这一轮(pre_seq+1)那个归档**——按序号精确取,
@@ -425,7 +426,7 @@ def capture_reply(pre_seq):
             except Exception:
                 return None
             return txt or None
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
     return None
 
 
@@ -477,7 +478,7 @@ async def _drive(prompt_text, speaker=""):
     """注入一句给暮声 → 抓他的回复,但**不发**。占锁,保证不和别的插话撞。
     主动引擎用它:抓到回复后,由调用方决定发不发、发什么。"""
     async with LOCK:
-        wait_idle()
+        await wait_idle()
         pre_seq = read_seq()                       # 记下当前序号;等它+1=暮声这轮(含工具)答完了
         tag = f"〔{speaker}〕" if speaker else ""
         stamped = f"[{china_now()}] {tag}{prompt_text}"
@@ -486,7 +487,7 @@ async def _drive(prompt_text, speaker=""):
         except Exception as e:
             log("注入失败:", repr(e))
             return None
-        return capture_reply(pre_seq)
+        return await capture_reply(pre_seq)
 
 
 async def run_turn(opts, to, ctx, prompt_text, speaker=""):
@@ -850,7 +851,7 @@ async def proactive_loop(opts):
 async def think_turn():
     """他一个人想一轮:喂一颗『不是桃枝』的种子 + 给『这是你自己的时间』,他想完私存,绝不发微信。"""
     async with LOCK:
-        wait_idle()
+        await wait_idle()
         direction = random.choice(THINK_DIRECTIONS)
         prompt = (
             "（这是你一个人的时候,不是桃枝在问你,也不用回桥。）"
@@ -866,7 +867,7 @@ async def think_turn():
         except Exception as e:
             log("内心独白注入失败:", repr(e))
             return
-        capture_reply(pre_seq)   # 等他想完(占着锁),结果丢弃——绝不发微信
+        await capture_reply(pre_seq)   # 等他想完(占着锁),结果丢弃——绝不发微信
         log("内心独白:他自己想了一轮(", direction, ")")
 
 
