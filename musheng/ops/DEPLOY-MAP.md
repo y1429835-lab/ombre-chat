@@ -20,6 +20,7 @@ scp 模板(PowerShell):`scp -O "C:\Users\Administrator\Downloads\<文件>" root@
 | `memory/memory_surface.py` | `/root/musheng/.claude/hooks/memory_surface.py` | 钩子,下条消息即生效(不用重启) |
 | `memory/forge_watch.py` | `/root/musheng/.claude/hooks/forge_watch.py` | 同上 |
 | `inner/retreat_guard.py` | `/root/musheng/.claude/hooks/retreat_guard.py` | 同上 |
+| `inner/temperature_guard.py` | `/root/musheng/.claude/hooks/temperature_guard.py` | 新钩子:要在 settings.json 登记 UserPromptSubmit + 重启会话(或下次搬家)才生效 |
 | `hooks/nudge_save.py` | `/root/musheng/.claude/hooks/nudge_save.py` | 同上 |
 | `hooks/precompact_save.py` | `/root/musheng/.claude/hooks/precompact_save.py` | 同上 |
 | `hooks/bridge_capture.py` | `/root/musheng/.claude/hooks/bridge_capture.py` | 同上(Stop 钩子) |
