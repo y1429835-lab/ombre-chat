@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25j · 抓回复双保险:序号没涨就从对话记录直接捞整轮(治回复被晾住/超时丢);补回车只在还没回复时补"
+BRIDGE_VERSION = "2026-06-25k · 黑匣子:抽风时自动记现场(屏幕/序号/记录/needle)+ 超时砍到150s不堵微信"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -38,7 +38,7 @@ SEQ_PATH = os.path.join(BRIDGE_DIR, "seq.txt")
 REPLY_PATH = os.path.join(BRIDGE_DIR, "last_reply.txt")
 STATE_FILE = os.path.join(BRIDGE_DIR, "state.json")
 TMUX_TARGET = os.environ.get("TMUX_TARGET", "musheng:0")     # 暮声所在的 tmux 窗口
-REPLY_TIMEOUT = int(os.environ.get("REPLY_TIMEOUT", "240"))   # 等暮声回复最多多少秒
+REPLY_TIMEOUT = int(os.environ.get("REPLY_TIMEOUT", "150"))   # 等暮声回复最多多少秒(砍短:卡一条别堵微信太久;正经长回合有兜底接着)
 NOCONTACT_SECS = int(os.environ.get("NOCONTACT_SECS", "86400"))  # 多久没找他→他发"我在"(默认24h)
 QUIET_START = int(os.environ.get("QUIET_START_HOUR", "0"))    # 北京时间静音时段开始(深夜保险)
 QUIET_END = int(os.environ.get("QUIET_END_HOUR", "8"))       # 静音时段结束
@@ -339,6 +339,17 @@ def press_enter():
         pass
 
 
+def pane_snapshot(n=14):
+    """抓暮声屏幕最后 n 行(去空行、单行拼起来)——出问题时记进日志当『黑匣子』,事后直接看现场,不靠猜。"""
+    try:
+        out = subprocess.run(["tmux", "capture-pane", "-p", "-t", TMUX_TARGET],
+                             capture_output=True, text=True, timeout=5).stdout or ""
+    except Exception as e:
+        return "(抓屏失败: %r)" % e
+    lines = [l.rstrip() for l in out.split("\n") if l.strip()]
+    return " ⏎ ".join(lines[-n:])
+
+
 def pane_busy():
     """读暮声屏幕,判断他是不是正忙(Claude Code 处理中底部会显示『esc to interrupt』)。
     读不到/出错就当『不忙』,免得误判把桥卡死。只用来『别在他忙时插话』,是best-effort。"""
@@ -497,6 +508,8 @@ async def capture_reply(pre_seq, needle=None):
     last_scan = 0.0
     cached = None                 # 记录里捞到的回复(throttle:别每0.5s读整个记录)
     stale_since = None
+    nudges = 0
+    ever_fresh = False            # 注入后他到底有没有动过(产出过)——黑匣子用:判断"消息到底进没进去"
     while time.time() < deadline:
         # ① 快车道:序号涨了 → 读这轮归档
         if read_seq() >= target:
@@ -513,6 +526,8 @@ async def capture_reply(pre_seq, needle=None):
             return txt or None
         now = time.time()
         fresh = transcript_fresh(tp, within=3.0)
+        if fresh:
+            ever_fresh = True
         # 每 ~1.5s 才扫一次记录,看他这轮答了没(throttle,省得读爆大文件)
         if needle and now - last_scan >= 1.5:
             cached = reply_turn_after(tp, needle)
@@ -529,8 +544,19 @@ async def capture_reply(pre_seq, needle=None):
             if now - last_nudge >= 4 and not fresh:
                 press_enter()
                 last_nudge = now
+                nudges += 1
                 log("补回车(还没回复且他没在产出、疑似注入没提交)")
+                if nudges == 2:   # 补了两次还没动静=可疑,拍一张现场存档(黑匣子·早期)
+                    log("⚠️现场快照(补回车2次仍无回应)｜seq=", read_seq(), "/", target,
+                        "｜他产出过?", ever_fresh, "｜屏幕:", pane_snapshot())
         await asyncio.sleep(0.5)
+    # 超时了——把黑匣子记全:序号、他产出过没、记录里到底有没有他的回复、屏幕长啥样
+    fb = reply_turn_after(tp, needle) if needle else None
+    log("⚠️等暮声超时·诊断｜seq=", read_seq(), "/", target,
+        "｜他产出过?", ever_fresh, "｜补回车", nudges, "次",
+        "｜记录里捞到回复?", ("有(长%d)" % len(fb)) if fb else "无",
+        "｜needle=", (needle or "")[:60],
+        "｜屏幕:", pane_snapshot())
     return None
 
 
