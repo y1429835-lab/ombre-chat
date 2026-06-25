@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25l · 黑匣子逮到根因:用屏幕esc-to-interrupt判他在忙(思考时记录不写会漏判)→他一忙就不补回车、不算超时(治思考被回车捅乱→超时丢回复)"
+BRIDGE_VERSION = "2026-06-25m · 修快车道翻车:序号涨了但归档为空时,不再直接放弃→回头从对话记录锚定捞这轮(治46s'假超时'丢回复);这种情况也记诊断"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -512,19 +512,28 @@ async def capture_reply(pre_seq, needle=None):
     nudges = 0
     ever_fresh = False            # 注入后他到底有没有忙过/产出过——黑匣子用:判断"消息到底进没进去"
     while time.time() < deadline and time.time() < hard_deadline:
-        # ① 快车道:序号涨了 → 读这轮归档
+        # ① 快车道:序号涨了(这轮答完了)→ 读这轮归档
         if read_seq() >= target:
+            txt = ""
             per = os.path.join(BRIDGE_DIR, "reply_%d.txt" % target)
             try:
                 txt = open(per, encoding="utf-8").read().strip()
-                return txt or None
             except Exception:
-                pass
-            try:
-                txt = open(REPLY_PATH, encoding="utf-8").read().strip()
-            except Exception:
-                return None
-            return txt or None
+                try:
+                    txt = open(REPLY_PATH, encoding="utf-8").read().strip()
+                except Exception:
+                    txt = ""
+            if txt:
+                return txt
+            # 归档是空的(钩子这轮没抓到正文/序号串了)→ **别直接放弃**,回头用『锚定你那句』从记录里捞这一整轮
+            if needle:
+                fb = reply_turn_after(tp, needle)
+                if fb:
+                    log("归档为空,改从对话记录里捞这轮回复(兜底·快车道空)")
+                    return fb
+            log("⚠️归档空且记录也没捞到·诊断｜seq=", read_seq(), "/", target,
+                "｜needle=", (needle or "")[:60], "｜屏幕:", pane_snapshot())
+            return None
         now = time.time()
         fresh = transcript_fresh(tp, within=3.0)
         # 『他在忙』= 记录在写(打字) 或 屏幕显示 esc to interrupt(思考/用工具——思考时不怎么写记录,
