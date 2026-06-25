@@ -27,6 +27,10 @@ import base64
 import math
 import random
 
+# —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
+# 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
+BRIDGE_VERSION = "2026-06-25 · parse_send-fix(剥『桃枝>>』前缀,不再漏标记)"
+
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
 SEQ_PATH = os.path.join(BRIDGE_DIR, "seq.txt")
@@ -862,6 +866,7 @@ async def main():
     asyncio.create_task(proactive_loop(primary["opts"]))   # 主动引擎(白天/夜间)只走主线(桃枝)
     asyncio.create_task(activity_server())                  # 感知接口(手机活动上报)
     # think_loop 已被"夜间模式"取代(夜间就是他自己的时间),不再单独跑,免得夜里双重打扰
+    log("桥启动 ▶ 版本", BRIDGE_VERSION)
     log("桥启动。线路数=", len(accounts), "| 主线=", primary.get("name") or "(默认)",
         "| 目标=", TMUX_TARGET, "| 无联系", NOCONTACT_SECS, "秒后主动")
     await asyncio.gather(*[updates_loop(a) for a in accounts])   # 每条线一个长轮询,并行盯着
