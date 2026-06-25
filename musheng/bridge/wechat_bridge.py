@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25o · 架构改版(采纳GPT):transcript为唯一真相,按needle锚定poll;序号=门铃事件,归档仅兜底;门铃响也等落盘flush再交付——治随机丢回复的根(两份数据竞态)"
+BRIDGE_VERSION = "2026-06-25p · transcript为唯一真相+等落盘(o架构);补回车改硬判据:只在他自始至终没露面(注入没进去)时补,不再靠不稳的判忙——治思考(Seasoning)时被误判乱补"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -503,13 +503,14 @@ async def capture_reply(pre_seq, needle=None):
     补回车:只在『还没有任何回复 + 他没在产出』时补(=注入可能没提交);他一旦答了就不补(治瞎补)。"""
     target = pre_seq + 1
     tp = find_transcript()
+    started = time.time()
     deadline = time.time() + REPLY_TIMEOUT          # "闲着不吭声"的超时;他一忙就往后续(见下)
     hard_deadline = time.time() + REPLY_TIMEOUT * 4 # 绝对上限,防工具真卡死时无限占锁
     last_nudge = time.time()      # 进来先留点缓冲,别一上来就补
     last_scan = 0.0
     cached = None                 # 记录里捞到的回复(throttle:别每0.5s读整个记录)
     nudges = 0
-    ever_busy = False             # 注入后他到底有没有忙过/产出过——判断"消息到底进没进去"
+    ever_busy = False             # 注入后他到底有没有露过面(忙过/产出过)——判断"消息到底进没进去"
 
     def snap(tag):
         """黑匣子·全要素快照:一处抽风/兜底,把判这事所需的一切都记下来,事后凭它定根、不靠猜。"""
@@ -574,12 +575,15 @@ async def capture_reply(pre_seq, needle=None):
                 return reply
         else:
             deliver_since = None
-            # 补回车:只在『门铃没响(他没答) + 他闲着 + 还没捞到回复』时——这才像"注入没提交、卡输入框"
-            if not reply and not seq_done and not busy and now - last_nudge >= 4:
+            # 补回车的硬判据(不再靠"猜他此刻忙不忙",那不稳):
+            # 只有他『自始至终一次面都没露过』(ever_busy=False=注入压根没进去他没收到)+ 给足12秒确认 → 才补。
+            # 他只要露过一次面(写过记录/屏幕忙过一下),就说明消息进去了——耐心等回复,绝不补(治思考时被误判乱补)。
+            if (not reply and not seq_done and not ever_busy
+                    and now - started >= 12 and now - last_nudge >= 5):
                 press_enter()
                 last_nudge = now
                 nudges += 1
-                log("补回车(门铃没响且他闲着、疑似注入没提交)")
+                log("补回车(他自始至终没露面、疑似注入压根没进去)")
                 if nudges == 2:
                     snap("补回车2次仍无回应")
         await asyncio.sleep(0.4)
