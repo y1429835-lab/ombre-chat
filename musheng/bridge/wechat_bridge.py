@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25m · 修快车道翻车:序号涨了但归档为空时,不再直接放弃→回头从对话记录锚定捞这轮(治46s'假超时'丢回复);这种情况也记诊断"
+BRIDGE_VERSION = "2026-06-25n · 黑匣子加固:每条抽风/兜底路径都记全要素(序号/归档空不空/记录锚到没/忙过没/补几次/屏幕)——先观察后定改"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -510,7 +510,30 @@ async def capture_reply(pre_seq, needle=None):
     cached = None                 # 记录里捞到的回复(throttle:别每0.5s读整个记录)
     stale_since = None
     nudges = 0
-    ever_fresh = False            # 注入后他到底有没有忙过/产出过——黑匣子用:判断"消息到底进没进去"
+    ever_busy = False             # 注入后他到底有没有忙过/产出过——判断"消息到底进没进去"
+
+    def snap(tag):
+        """黑匣子·全要素快照:一处抽风/兜底,把判这事所需的一切都记下来,事后凭它定根、不靠猜。"""
+        seq = read_seq()
+        per = os.path.join(BRIDGE_DIR, "reply_%d.txt" % target)
+        if os.path.exists(per):
+            try:
+                a = open(per, encoding="utf-8").read().strip()
+                arch = "空" if a == "" else "有(%d字)" % len(a)
+            except Exception as e:
+                arch = "读失败%r" % e
+        else:
+            arch = "无此文件"
+        fb = reply_turn_after(tp, needle) if needle else None
+        try:
+            age = "%.1fs前" % (time.time() - os.path.getmtime(tp)) if tp else "无tp"
+        except Exception:
+            age = "?"
+        log("黑匣子·%s｜seq=%s/目标%s｜归档reply_%s=%s｜记录里锚到回复=%s｜他忙过?%s｜补回车%s次｜记录上次写=%s｜屏幕在忙?%s｜needle=%s｜屏:%s" % (
+            tag, seq, target, target, arch,
+            ("有(%d字)" % len(fb)) if fb else "无",
+            ever_busy, nudges, age, pane_busy(), (needle or "")[:50], pane_snapshot()))
+
     while time.time() < deadline and time.time() < hard_deadline:
         # ① 快车道:序号涨了(这轮答完了)→ 读这轮归档
         if read_seq() >= target:
@@ -529,10 +552,9 @@ async def capture_reply(pre_seq, needle=None):
             if needle:
                 fb = reply_turn_after(tp, needle)
                 if fb:
-                    log("归档为空,改从对话记录里捞这轮回复(兜底·快车道空)")
+                    snap("空归档→记录兜底成功")
                     return fb
-            log("⚠️归档空且记录也没捞到·诊断｜seq=", read_seq(), "/", target,
-                "｜needle=", (needle or "")[:60], "｜屏幕:", pane_snapshot())
+            snap("空归档且记录也没捞到·放弃")
             return None
         now = time.time()
         fresh = transcript_fresh(tp, within=3.0)
@@ -540,7 +562,7 @@ async def capture_reply(pre_seq, needle=None):
         # 光看记录会漏判,所以必须带上屏幕这个硬信号)。他一忙就绝不补回车、绝不当他答完。
         busy = fresh or pane_busy()
         if busy:
-            ever_fresh = True
+            ever_busy = True
             deadline = now + REPLY_TIMEOUT      # 他在忙就续命:超时只惩罚"闲着又不吭声",不误杀正经长思考
         # 每 ~1.5s 才扫一次记录,看他这轮答了没(throttle,省得读爆大文件)
         if needle and now - last_scan >= 1.5:
@@ -550,7 +572,7 @@ async def capture_reply(pre_seq, needle=None):
         if cached:
             stale_since = stale_since if (stale_since and not busy) else (now if not busy else None)
             if stale_since and now - stale_since >= 4:
-                log("序号没涨,改从对话记录里直接捞回复(兜底)")
+                snap("序号没涨→记录兜底成功")
                 return cached
         else:
             stale_since = None
@@ -560,17 +582,10 @@ async def capture_reply(pre_seq, needle=None):
                 last_nudge = now
                 nudges += 1
                 log("补回车(还没回复且他没在产出、疑似注入没提交)")
-                if nudges == 2:   # 补了两次还没动静=可疑,拍一张现场存档(黑匣子·早期)
-                    log("⚠️现场快照(补回车2次仍无回应)｜seq=", read_seq(), "/", target,
-                        "｜他产出过?", ever_fresh, "｜屏幕:", pane_snapshot())
+                if nudges == 2:   # 补了两次还没动静=可疑,早拍一张
+                    snap("补回车2次仍无回应")
         await asyncio.sleep(0.5)
-    # 超时了——把黑匣子记全:序号、他产出过没、记录里到底有没有他的回复、屏幕长啥样
-    fb = reply_turn_after(tp, needle) if needle else None
-    log("⚠️等暮声超时·诊断｜seq=", read_seq(), "/", target,
-        "｜他产出过?", ever_fresh, "｜补回车", nudges, "次",
-        "｜记录里捞到回复?", ("有(长%d)" % len(fb)) if fb else "无",
-        "｜needle=", (needle or "")[:60],
-        "｜屏幕:", pane_snapshot())
+    snap("等暮声超时·放弃")
     return None
 
 
