@@ -30,7 +30,7 @@ import hashlib
 
 # —— 版本戳 —— 每次改桥就更新这行(日期 + 改了啥)。启动日志会打出来,
 # 跨好几天也能一眼认出 VPS 上跑的到底是哪一版,不用再猜 sha。
-BRIDGE_VERSION = "2026-06-25f · 稳注入(喂前清空+看屏确认他闲下来+喂后补回车;治图片被挤丢/卡住)"
+BRIDGE_VERSION = "2026-06-25g · 抓整轮不截断 + 补回车只在他真闲时(治图片描述只收到后半段/删了又重发)"
 
 ACC_PATH = os.path.expanduser("~/.claude/channels/wechat/account.json")
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
@@ -453,9 +453,10 @@ async def capture_reply(pre_seq):
             except Exception:
                 return None
             return txt or None
-        # 还没答完:若迟迟没起步,周期性补回车把可能卡住的注入提交掉(对空输入框无害)
+        # 还没答完:只在『他确实闲着』(屏幕没在忙)时才补回车——他正干活(读图/用工具,长达几十秒)
+        # 就别捅,免得回车搅进他的工作里搞出乱子。补回车只为救"卡在输入框、没提交"那种真闲着的情况。
         now = time.time()
-        if now >= next_nudge and nudges < 4:
+        if now >= next_nudge and nudges < 4 and not pane_busy():
             press_enter()
             nudges += 1
             next_nudge = now + 8

@@ -14,9 +14,44 @@ import sys
 BRIDGE_DIR = os.path.expanduser(os.environ.get("BRIDGE_DIR", "~/musheng/.bridge"))
 
 
-def last_assistant_text(path):
-    """取 transcript 里最后一条 assistant 消息的纯文本(只要 text,不要 thinking/工具)。"""
-    last = None
+def _assistant_text(obj):
+    """从一条 assistant 消息里抽纯文本(只要 text,不要 thinking/工具)。"""
+    m = obj.get("message") or {}
+    content = m.get("content")
+    parts = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                parts.append(b["text"])
+    return "\n".join(p for p in parts if p and p.strip()).strip()
+
+
+def _is_human_user(obj):
+    """这条 user 是不是『真人那一句』(桥注入的提示),而不是工具结果(tool_result)。
+    工具调用会往 transcript 插 user 角色的 tool_result,不能把它当成新一轮的开头。"""
+    if obj.get("type") != "user":
+        return False
+    m = obj.get("message") or {}
+    content = m.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "tool_result":
+                    return False
+                if b.get("type") == "text" and (b.get("text") or "").strip():
+                    return True
+        return False
+    return False
+
+
+def current_turn_text(path):
+    """取『这一整轮』暮声说的全部正文 —— 从最近一条真人消息之后起,把所有 assistant 的 text 按顺序拼起来。
+    治"先说话→用工具(比如读图/删文件)→再说话"时,只抓到最后一段、前面长描述被丢掉的截断 bug。"""
+    rows = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -26,21 +61,20 @@ def last_assistant_text(path):
                 obj = json.loads(line)
             except Exception:
                 continue
-            if obj.get("type") != "assistant":
-                continue
-            m = obj.get("message") or {}
-            content = m.get("content")
-            parts = []
-            if isinstance(content, str):
-                parts.append(content)
-            elif isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
-                        parts.append(b["text"])
-            text = "\n".join(p for p in parts if p and p.strip()).strip()
-            if text:
-                last = text
-    return last
+            if obj.get("type") in ("user", "assistant"):
+                rows.append(obj)
+    start = -1
+    for i in range(len(rows) - 1, -1, -1):
+        if _is_human_user(rows[i]):
+            start = i
+            break
+    parts = []
+    for obj in rows[start + 1:]:
+        if obj.get("type") == "assistant":
+            t = _assistant_text(obj)
+            if t:
+                parts.append(t)
+    return "\n\n".join(parts).strip()
 
 
 def main():
@@ -52,7 +86,7 @@ def main():
     if not tp or not os.path.exists(tp):
         sys.exit(0)
     try:
-        text = last_assistant_text(tp) or ""
+        text = current_turn_text(tp) or ""
     except Exception:
         text = ""
     # 注意:哪怕这轮没正文(纯工具)也照常写空 + seq+1——这样桥知道"这轮结束了",不会傻等超时
